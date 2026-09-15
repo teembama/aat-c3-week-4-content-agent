@@ -1,0 +1,37 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+  --bg-warm: #e1dbd7;
+  --bg-card: #ffffff;
+  --text-primary: #1a1a1a;
+  --text-secondary: #5a5550;
+  --text-muted: #8a847f;
+  --accent: #1f1823;
+  --accent-light: #3d3347;
+  --border: #d1cbc6;
+  --border-light: #e8e3df;
+  --success: #2d7a4f;
+  --warning: #b5760a;
+  --error: #c43c3c;
+  --info: #3b6fa0;
+}
+
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  background-color: var(--bg-warm);
+  color: var(--text-primary);
+}
+
+/* Editorial typography */
+h1 { letter-spacing: -0.025em; }
+h2 { letter-spacing: -0.015em; }
+
+/* Scrollbar styling */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }

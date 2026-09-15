@@ -1,9 +1,6 @@
 # Platform Formatting Rules
 
-Source document: https://docs.google.com/document/d/146Jw0zspMAJuzbLgfeVzVO4NpnOGCunLPFp3rEhYvg8/edit
-
 ## LinkedIn Post
-
 - Use the PAS copywriting structure: problem, agitation, solution.
 - Keep paragraphs short.
 - Use bullets or simple symbols when they improve clarity.
@@ -12,7 +9,6 @@ Source document: https://docs.google.com/document/d/146Jw0zspMAJuzbLgfeVzVO4NpnO
 - Include a relevant image or carousel if useful.
 
 ## X Post
-
 - Lead with the main benefit, insight, or hook.
 - Keep the post focused on one core idea.
 - Use line breaks for readability.
@@ -20,7 +16,6 @@ Source document: https://docs.google.com/document/d/146Jw0zspMAJuzbLgfeVzVO4NpnO
 - Tag another account only if the tag adds value.
 
 ## Email Newsletter
-
 - Use a strong subject line with a clear benefit or point of intrigue.
 - Start with a short intro of 1 to 3 sentences.
 - Make the main value section easy to skim with subheadings or bullets.

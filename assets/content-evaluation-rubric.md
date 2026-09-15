@@ -1,7 +1,5 @@
 # Content Evaluation Rubric
 
-Use this rubric to evaluate draft quality before a human approves the content.
-
 ## Evaluation Criteria
 
 | Criterion | What To Check |
@@ -19,7 +17,6 @@ Use this rubric to evaluate draft quality before a human approves the content.
 ## Suggested Evaluation Output
 
 For each draft, the evaluation should include:
-
 - Overall status: pass, revise, or reject
 - Scores or short notes for the criteria above
 - Unsupported or weak claims to remove or rewrite
