@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { ContentRequest } from "@/types";
 import { IntakeForm } from "@/components/IntakeForm";
+import { AuthGuard } from "@/components/AuthGuard";
 
 const STATUS_LABELS: Record<string, { label: string; color: string; bg: string }> = {
   draft: { label: "Draft", color: "text-[#5a5550]", bg: "bg-[#e8e3df]" },
@@ -18,7 +19,7 @@ const STATUS_LABELS: Record<string, { label: string; color: string; bg: string }
   failed: { label: "Failed", color: "text-[#c43c3c]", bg: "bg-red-50" },
 };
 
-export default function DashboardPage() {
+function DashboardContent() {
   const [requests, setRequests] = useState<ContentRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -152,5 +153,13 @@ export default function DashboardPage() {
         </>
       )}
     </div>
+  );
+}
+
+export default function DashboardPage() {
+  return (
+    <AuthGuard>
+      <DashboardContent />
+    </AuthGuard>
   );
 }

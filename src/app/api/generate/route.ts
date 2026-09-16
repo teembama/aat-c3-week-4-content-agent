@@ -3,6 +3,7 @@ import { getServiceSupabase } from "@/lib/supabase";
 import { callClaude, CostEntry } from "@/lib/anthropic";
 import { info, warn, error, success } from "@/lib/notifications";
 import { PipelineNotification, EvaluationResult } from "@/types";
+import { getAuthUser } from "@/lib/auth-api";
 
 export const maxDuration = 300;
 
@@ -135,6 +136,11 @@ export async function POST(req: NextRequest) {
   const sb = getServiceSupabase();
 
   try {
+    const authUser = await getAuthUser(req);
+    if (!authUser) {
+      return NextResponse.json({ success: false, error: "Authentication required." }, { status: 401 });
+    }
+
     const { request_id } = await req.json();
     if (!request_id) return NextResponse.json({ success: false, error: "Missing request_id." }, { status: 400 });
 

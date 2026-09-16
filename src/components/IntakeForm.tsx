@@ -3,6 +3,7 @@
 import { useState, useRef } from "react";
 import toast from "react-hot-toast";
 import { ToneOption } from "@/types";
+import { getAuthHeaders } from "@/lib/auth-context";
 
 interface IntakeFormProps {
   onSuccess: () => void;
@@ -110,7 +111,7 @@ export function IntakeForm({ onSuccess }: IntakeFormProps) {
     try {
       const res = await fetch("/api/research", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) },
         body: JSON.stringify({
           topic: form.topic.trim(),
           audience: form.audience.trim(),

@@ -4,6 +4,7 @@ import { callClaude, callClaudeWithSearch, extractJson, CostEntry } from "@/lib/
 import { scrapeUrl } from "@/lib/firecrawl";
 import { info, warn, error, success } from "@/lib/notifications";
 import { PipelineNotification } from "@/types";
+import { getAuthUser } from "@/lib/auth-api";
 
 export const maxDuration = 60;
 
@@ -28,6 +29,11 @@ export async function POST(req: NextRequest) {
   let requestId: string | null = null;
 
   try {
+    const authUser = await getAuthUser(req);
+    if (!authUser) {
+      return NextResponse.json({ success: false, error: "Authentication required." }, { status: 401 });
+    }
+
     const body = await req.json();
     const { source_url, tone, primary_keyword, additional_context } = body;
     const existingRequestId: string | undefined = body.request_id;
@@ -82,6 +88,11 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ success: false, error: `Failed to create request: ${insertErr?.message}` }, { status: 500 });
       }
       requestId = requestRow.id;
+
+      // Best-effort: record the creator. Uses a separate update (rather than
+      // including creator_id in the insert above) so request creation still
+      // works even before the auth migration's creator_id column exists.
+      await sb.from("content_requests").update({ creator_id: authUser.user_id }).eq("id", requestId);
     }
 
     // ── Scrape source URL ──

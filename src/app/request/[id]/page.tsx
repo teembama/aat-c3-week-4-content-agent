@@ -5,6 +5,9 @@ import { useParams } from "next/navigation";
 import toast from "react-hot-toast";
 import { NotificationTimeline } from "@/components/NotificationTimeline";
 import { ProgressTracker } from "@/components/ProgressTracker";
+import { AuthGuard } from "@/components/AuthGuard";
+import { ConfirmModal, ConfirmTone } from "@/components/ConfirmModal";
+import { useAuth, getAuthHeaders } from "@/lib/auth-context";
 import { ContentRequest, ResearchSource, ContentDraft, PublishingQueueItem } from "@/types";
 
 interface RequestData {
@@ -14,19 +17,35 @@ interface RequestData {
   queue: PublishingQueueItem[];
 }
 
+interface PendingAction {
+  title: string;
+  description: string;
+  tone: ConfirmTone;
+  confirmLabel?: string;
+  run: () => Promise<void> | void;
+}
+
 const SOURCE_QUALITY: Record<string, { label: string; color: string }> = {
   user_url: { label: "Primary", color: "bg-green-100 text-green-800" },
   web_search: { label: "Secondary", color: "bg-blue-100 text-blue-800" },
 };
 
-export default function RequestDetailPage() {
+function channelLabel(channel: string): string {
+  return channel === "x" ? "X (Twitter)" : channel.charAt(0).toUpperCase() + channel.slice(1);
+}
+
+function RequestDetailContent() {
   const params = useParams();
   const id = params.id as string;
+  const { profile } = useAuth();
+  const isApprover = profile?.role === "approver";
   const [data, setData] = useState<RequestData | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [addUrlInput, setAddUrlInput] = useState("");
   const [showAuditTrail, setShowAuditTrail] = useState(false);
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
 
   const loadData = useCallback(async () => {
     try {
@@ -44,10 +63,21 @@ export default function RequestDetailPage() {
     return () => clearInterval(interval);
   }, [loadData]);
 
+  async function handleConfirmRun() {
+    if (!pendingAction) return;
+    setConfirmBusy(true);
+    try {
+      await pendingAction.run();
+    } finally {
+      setConfirmBusy(false);
+      setPendingAction(null);
+    }
+  }
+
   async function triggerGeneration() {
     setActionLoading("generate");
     try {
-      const res = await fetch("/api/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request_id: id }) });
+      const res = await fetch("/api/generate", { method: "POST", headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) }, body: JSON.stringify({ request_id: id }) });
       const json = await res.json();
       if (json.success) toast.success("Articles generated."); else toast.error(json.error || "Generation failed.");
       loadData();
@@ -59,7 +89,7 @@ export default function RequestDetailPage() {
     if (!addUrlInput.trim()) return;
     setActionLoading("add_url");
     try {
-      const res = await fetch("/api/research", { method: "POST", headers: { "Content-Type": "application/json" },
+      const res = await fetch("/api/research", { method: "POST", headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) },
         body: JSON.stringify({ request_id: id, source_url: addUrlInput.trim() }) });
       const json = await res.json();
       if (json.success) { toast.success("Source added."); setAddUrlInput(""); } else toast.error(json.error || "Failed.");
@@ -71,9 +101,20 @@ export default function RequestDetailPage() {
   async function selectDraft(draftId: string) {
     setActionLoading(draftId);
     try {
-      const res = await fetch("/api/adapt", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request_id: id, draft_id: draftId }) });
+      const res = await fetch("/api/adapt", { method: "POST", headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) }, body: JSON.stringify({ request_id: id, draft_id: draftId }) });
       const json = await res.json();
       if (json.success) toast.success("Channel versions ready."); else toast.error(json.error || "Failed.");
+      loadData();
+    } catch { toast.error("Network error."); }
+    finally { setActionLoading(null); }
+  }
+
+  async function deselectDraft(draftId: string) {
+    setActionLoading(draftId);
+    try {
+      const res = await fetch("/api/deselect", { method: "POST", headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) }, body: JSON.stringify({ request_id: id, draft_id: draftId }) });
+      const json = await res.json();
+      if (json.success) toast.success("Article deselected."); else toast.error(json.error || "Failed.");
       loadData();
     } catch { toast.error("Network error."); }
     finally { setActionLoading(null); }
@@ -82,9 +123,16 @@ export default function RequestDetailPage() {
   async function handleQueueAction(queueId: string, action: string) {
     setActionLoading(queueId);
     try {
-      const res = await fetch("/api/publish", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ queue_id: queueId, action }) });
+      const res = await fetch("/api/publish", { method: "POST", headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) }, body: JSON.stringify({ queue_id: queueId, action }) });
       const json = await res.json();
-      if (json.success) toast.success(action === "approve" ? "Approved." : action === "publish" ? "Published." : "Rejected.");
+      const SUCCESS_LABELS: Record<string, string> = {
+        approve: "Approved.",
+        publish: "Published.",
+        reject: "Rejected.",
+        unpublish: "Unpublished.",
+        unapprove: "Approval revoked.",
+      };
+      if (json.success) toast.success(SUCCESS_LABELS[action] || "Done.");
       else toast.error(json.error || "Failed.");
       loadData();
     } catch { toast.error("Network error."); }
@@ -121,9 +169,21 @@ export default function RequestDetailPage() {
   const researchDone = lastResearchMilestone?.level === "success";
   const sourceInsufficient = lastResearchMilestone?.level === "warning";
   const showGenerateButton = !isProcessing && drafts.length === 0 && researchDone && !sourceInsufficient;
+  const hasApprovedOrPublished = queue.some((q) => q.status === "approved" || q.status === "published");
 
   return (
     <div className="space-y-6">
+      <ConfirmModal
+        open={!!pendingAction}
+        title={pendingAction?.title || ""}
+        description={pendingAction?.description || ""}
+        tone={pendingAction?.tone || "default"}
+        confirmLabel={pendingAction?.confirmLabel}
+        busy={confirmBusy}
+        onConfirm={handleConfirmRun}
+        onCancel={() => setPendingAction(null)}
+      />
+
       {/* Header */}
       <div className="bg-white rounded-xl border border-[#d1cbc6] p-6">
         <div className="flex items-start justify-between gap-4">
@@ -290,13 +350,17 @@ export default function RequestDetailPage() {
                   {/* Evaluation scores */}
                   {d.evaluation?.criteria && (
                     <div className="flex flex-wrap gap-1.5 mb-3">
-                      {Object.entries(d.evaluation.criteria).map(([key, val]: [string, any]) => (
-                        <span key={key} className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
-                          val.score >= 4 ? "bg-green-50 text-green-700" : val.score >= 3 ? "bg-amber-50 text-amber-700" : "bg-red-50 text-red-700"}`}
-                          title={val.note}>
-                          {key.replace(/_/g, " ")}: {val.score}/5
-                        </span>
-                      ))}
+                      {Object.entries(d.evaluation.criteria).map(([key, val]: [string, any]) => {
+                        const score = typeof val === "number" ? val : val?.score;
+                        const note = typeof val === "object" ? val?.note : "";
+                        return (
+                          <span key={key} className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
+                            score >= 4 ? "bg-green-50 text-green-700" : score >= 3 ? "bg-amber-50 text-amber-700" : "bg-red-50 text-red-700"}`}
+                            title={note}>
+                            {key.replace(/_/g, " ")}: {score}/5
+                          </span>
+                        );
+                      })}
                     </div>
                   )}
 
@@ -307,13 +371,33 @@ export default function RequestDetailPage() {
 
                   {/* Actions */}
                   {queue.length === 0 && !isProcessing && d.status !== "selected" && (
-                    <button onClick={() => selectDraft(d.id)} disabled={!!actionLoading}
+                    <button onClick={() => setPendingAction({
+                      title: "Select this article?",
+                      description: "Are you sure you want to select this article? This will generate LinkedIn, X, and newsletter versions.",
+                      tone: "default",
+                      confirmLabel: "Select & Adapt",
+                      run: () => selectDraft(d.id),
+                    })} disabled={!!actionLoading}
                       className="mt-3 px-4 py-2 bg-[#1f1823] text-white text-sm font-medium rounded-lg hover:bg-[#3d3347] disabled:opacity-50 transition-colors">
                       {actionLoading === d.id ? "Preparing…" : "Select & Adapt for Channels"}
                     </button>
                   )}
                   {d.status === "selected" && (
-                    <span className="inline-block mt-3 text-xs font-medium text-[#1f1823] bg-[#e8e3df] px-2.5 py-1 rounded-full">Selected ✓</span>
+                    <div className="mt-3 flex items-center gap-2 flex-wrap">
+                      <span className="inline-block text-xs font-medium text-[#1f1823] bg-[#e8e3df] px-2.5 py-1 rounded-full">Selected ✓</span>
+                      {queue.length > 0 && !hasApprovedOrPublished && (
+                        <button onClick={() => setPendingAction({
+                          title: "Deselect this article?",
+                          description: "Deselect this article and remove channel adaptations? You can then pick a different option.",
+                          tone: "danger",
+                          confirmLabel: "Deselect",
+                          run: () => deselectDraft(d.id),
+                        })} disabled={!!actionLoading}
+                          className="px-3 py-1.5 text-xs font-medium text-[#b5760a] border border-amber-200 bg-amber-50 rounded-lg hover:bg-amber-100 disabled:opacity-50 transition-colors">
+                          Deselect Article
+                        </button>
+                      )}
+                    </div>
                   )}
                 </div>
               );
@@ -345,18 +429,64 @@ export default function RequestDetailPage() {
                 <div className="text-xs text-[#5a5550] whitespace-pre-wrap max-h-44 overflow-y-auto border border-[#e8e3df] rounded-lg p-3 bg-[#faf9f8]">
                   {q.formatted_content}
                 </div>
-                <div className="mt-3 flex gap-2">
+                <div className="mt-3 flex gap-2 flex-wrap">
                   {q.status === "pending_review" && (
-                    <>
-                      <button onClick={() => handleQueueAction(q.id, "approve")} disabled={!!actionLoading}
-                        className="px-3 py-1.5 bg-[#2d7a4f] text-white text-xs font-medium rounded-lg hover:bg-[#246b42] disabled:opacity-50">Approve</button>
-                      <button onClick={() => handleQueueAction(q.id, "reject")} disabled={!!actionLoading}
-                        className="px-3 py-1.5 bg-red-50 text-[#c43c3c] text-xs font-medium rounded-lg hover:bg-red-100 disabled:opacity-50 border border-red-200">Reject</button>
-                    </>
+                    isApprover ? (
+                      <>
+                        <button onClick={() => setPendingAction({
+                          title: "Approve content?",
+                          description: `Approve this ${channelLabel(q.channel)} content for publishing?`,
+                          tone: "approve",
+                          confirmLabel: "Approve",
+                          run: () => handleQueueAction(q.id, "approve"),
+                        })} disabled={!!actionLoading}
+                          className="px-3 py-1.5 bg-[#2d7a4f] text-white text-xs font-medium rounded-lg hover:bg-[#246b42] disabled:opacity-50">Approve</button>
+                        <button onClick={() => setPendingAction({
+                          title: "Reject content?",
+                          description: `Reject this ${channelLabel(q.channel)} content? An approver can reverse this.`,
+                          tone: "reject",
+                          confirmLabel: "Reject",
+                          run: () => handleQueueAction(q.id, "reject"),
+                        })} disabled={!!actionLoading}
+                          className="px-3 py-1.5 bg-red-50 text-[#c43c3c] text-xs font-medium rounded-lg hover:bg-red-100 disabled:opacity-50 border border-red-200">Reject</button>
+                      </>
+                    ) : (
+                      <p className="text-xs text-[#8a847f] italic">An approver needs to review this content.</p>
+                    )
                   )}
                   {q.status === "approved" && (
-                    <button onClick={() => handleQueueAction(q.id, "publish")} disabled={!!actionLoading}
-                      className="px-3 py-1.5 bg-[#2d7a4f] text-white text-xs font-medium rounded-lg hover:bg-[#246b42] disabled:opacity-50">Mark Published</button>
+                    isApprover ? (
+                      <>
+                        <button onClick={() => setPendingAction({
+                          title: "Mark as published?",
+                          description: `Mark this ${channelLabel(q.channel)} as published? A notification will be sent to the team Discord.`,
+                          tone: "approve",
+                          confirmLabel: "Mark Published",
+                          run: () => handleQueueAction(q.id, "publish"),
+                        })} disabled={!!actionLoading}
+                          className="px-3 py-1.5 bg-[#2d7a4f] text-white text-xs font-medium rounded-lg hover:bg-[#246b42] disabled:opacity-50">Mark Published</button>
+                        <button onClick={() => setPendingAction({
+                          title: "Revoke approval?",
+                          description: `Revoke approval for this ${channelLabel(q.channel)} content? It will return to pending review.`,
+                          tone: "danger",
+                          confirmLabel: "Revoke Approval",
+                          run: () => handleQueueAction(q.id, "unapprove"),
+                        })} disabled={!!actionLoading}
+                          className="px-3 py-1.5 text-xs font-medium text-[#b5760a] border border-amber-200 bg-amber-50 rounded-lg hover:bg-amber-100 disabled:opacity-50">Revoke Approval</button>
+                      </>
+                    ) : (
+                      <p className="text-xs text-[#8a847f] italic">An approver needs to review this content.</p>
+                    )
+                  )}
+                  {q.status === "published" && isApprover && (
+                    <button onClick={() => setPendingAction({
+                      title: "Unpublish content?",
+                      description: `Unpublish this ${channelLabel(q.channel)}? The team will be notified.`,
+                      tone: "danger",
+                      confirmLabel: "Unpublish",
+                      run: () => handleQueueAction(q.id, "unpublish"),
+                    })} disabled={!!actionLoading}
+                      className="px-3 py-1.5 text-xs font-medium text-[#b5760a] border border-amber-200 bg-amber-50 rounded-lg hover:bg-amber-100 disabled:opacity-50">Unpublish</button>
                   )}
                 </div>
               </div>
@@ -381,5 +511,13 @@ export default function RequestDetailPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function RequestDetailPage() {
+  return (
+    <AuthGuard>
+      <RequestDetailContent />
+    </AuthGuard>
   );
 }
