@@ -131,6 +131,18 @@ function RequestDetailContent() {
     finally { stopLoading("generate"); }
   }
 
+  async function cancelGeneration() {
+    startLoading("cancel");
+    try {
+      const res = await fetch("/api/cancel", { method: "POST", headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) }, body: JSON.stringify({ request_id: id }) });
+      const json = await res.json();
+      if (json.success) toast.success("Cancelling — the pipeline will stop at the next step.");
+      else toast.error(json.error || "Couldn't cancel.");
+      loadData();
+    } catch { toast.error("Network error."); }
+    finally { stopLoading("cancel"); }
+  }
+
   async function regenerateAllArticles() {
     startLoading("regenerate_all");
     try {
@@ -324,6 +336,20 @@ function RequestDetailContent() {
               {request.status === "revising" && "Improving drafts based on verification…"}
               {request.status === "adapting" && "Adapting for LinkedIn, X, and newsletter…"}
             </span>
+
+            {/* Only the generation phases can be interrupted between steps */}
+            {["generating", "evaluating", "revising"].includes(request.status) && (
+              <button onClick={() => setPendingAction({
+                title: "Cancel article generation?",
+                description: "Any completed work will be saved, but remaining steps will stop.",
+                tone: "danger",
+                confirmLabel: "Cancel Generation",
+                run: cancelGeneration,
+              })} disabled={isLoading("cancel")}
+                className="px-2.5 py-1 text-xs font-medium text-[#c43c3c] border border-red-200 rounded-md hover:bg-red-50 disabled:opacity-50 transition-colors">
+                {isLoading("cancel") ? "Cancelling…" : "Cancel Generation"}
+              </button>
+            )}
           </div>
         </div>
       )}

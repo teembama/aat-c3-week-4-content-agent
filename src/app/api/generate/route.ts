@@ -20,6 +20,15 @@ interface Verification {
 }
 
 /**
+ * True once the user has cancelled. A missing `cancelled` column (migration
+ * not yet applied) reads as not-cancelled, so generation still runs.
+ */
+async function isCancelled(sb: any, requestId: string): Promise<boolean> {
+  const { data } = await sb.from("content_requests").select("cancelled").eq("id", requestId).single();
+  return !!data?.cancelled;
+}
+
+/**
  * Extract and verify an article's claims against the source content, then
  * evaluate the article using those verification results. Used both for the
  * initial draft and again after every revision, so the stored
@@ -31,8 +40,11 @@ async function verifyAndEvaluate(
   sourceContext: string,
   request: { topic: string; audience: string },
   keyword: string,
-  costs: CostEntry[]
-): Promise<{ verification: Verification; evaluation: EvaluationResult }> {
+  costs: CostEntry[],
+  cancelled: () => Promise<boolean>
+): Promise<{ verification: Verification; evaluation: EvaluationResult } | null> {
+  if (await cancelled()) return null;
+
   // Extraction and verification in a single round-trip — the model has the
   // article and the sources in front of it either way, and splitting them cost
   // a full extra call per article (and per revision).
@@ -82,6 +94,8 @@ Return ONLY JSON: { "claims": [ { "claim": "...", "claim_type": "statistic", "so
       (c) => c.verification_status === "fabricated" || c.verification_status === "contradicted"
     ),
   };
+
+  if (await cancelled()) return null;
 
   const hasFabrication = verification.fabricated.length > 0;
   const hasUnverified = verification.unverified.length > 0;
@@ -135,6 +149,7 @@ interface ArticleContext {
 async function generateOneArticle(ctx: ArticleContext, angle: string, index: number): Promise<string | null> {
   const { sb, requestId, request, sourceContext, keyword, costs, note } = ctx;
   const optionNumber = index + 1;
+  const cancelled = () => isCancelled(sb, requestId);
 
   try {
     if (index > 0) {
@@ -142,6 +157,8 @@ async function generateOneArticle(ctx: ArticleContext, angle: string, index: num
     }
 
     // ── STEP 1: Generate article from actual source content ──
+    if (await cancelled()) return null;
+
     const { result: article, cost: genCost } = await callClaude<{
       angle_description: string;
       article_markdown: string;
@@ -192,14 +209,18 @@ Return ONLY JSON:
     await note(info("evaluation", `Checking claims in option ${optionNumber}…`), "evaluating");
 
     let finalMarkdown = article.article_markdown;
-    let { verification, evaluation } = await verifyAndEvaluate(finalMarkdown, sourceContext, request, keyword, costs);
-    let finalEval = evaluation;
+    const firstPass = await verifyAndEvaluate(finalMarkdown, sourceContext, request, keyword, costs, cancelled);
+    if (!firstPass) return null;
+
+    let verification = firstPass.verification;
+    let finalEval = firstPass.evaluation;
 
     // ── STEP 4: Revise if needed (max 2), re-verifying the REVISED article each time ──
     const revisionHistory: any[] = [];
 
     if (finalEval.overall_status === "revise" || finalEval.overall_status === "reject") {
       for (let rev = 0; rev < 2; rev++) {
+        if (await cancelled()) return null;
         await note(info("revision", `Improving option ${optionNumber} (revision ${rev + 1})…`), "revising");
 
         try {
@@ -223,7 +244,8 @@ Return ONLY JSON:
           // Re-run full extraction + verification + evaluation against the REVISED article —
           // never trust the pre-revision counts, since the revision may have fixed some
           // issues, missed others, or introduced new ones.
-          const reCheck = await verifyAndEvaluate(finalMarkdown, sourceContext, request, keyword, costs);
+          const reCheck = await verifyAndEvaluate(finalMarkdown, sourceContext, request, keyword, costs, cancelled);
+          if (!reCheck) return null;
           verification = reCheck.verification;
           finalEval = reCheck.evaluation;
 
@@ -292,6 +314,10 @@ export async function POST(req: NextRequest) {
 
     const { data: request } = await sb.from("content_requests").select("*").eq("id", request_id).single();
     if (!request) return NextResponse.json({ success: false, error: "Request not found." }, { status: 404 });
+
+    // Clear any flag left by a previous cancellation, so retrying works.
+    // Separate best-effort call — a pre-migration row simply has no column.
+    await sb.from("content_requests").update({ cancelled: false }).eq("id", request_id);
 
     // Prevent duplicate concurrent generation runs on the same request.
     if (["generating", "evaluating", "revising"].includes(request.status)) {
@@ -416,6 +442,16 @@ export async function POST(req: NextRequest) {
     // Let any queued notification writes land before the final status write,
     // or a late append would overwrite it.
     await notifyChain;
+
+    // Cancelled mid-run: /api/cancel already set the status and wrote the
+    // notification. Anything finished before the stop is kept.
+    if (await isCancelled(sb, request_id)) {
+      return NextResponse.json({
+        success: false,
+        error: "Generation cancelled.",
+        data: { draft_ids: draftIds, cancelled: true },
+      });
+    }
 
     if (draftIds.length === 0) {
       await note(error("generation", "No articles could be generated. Please add more source material and try again."), "failed");
