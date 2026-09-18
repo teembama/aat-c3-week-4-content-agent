@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Toaster } from "react-hot-toast";
 import { AuthProvider } from "@/lib/auth-context";
+import { ClientOnly } from "@/components/ClientOnly";
 import { NavLinks } from "@/components/NavLinks";
 import { NavUser } from "@/components/NavUser";
 import "./globals.css";
@@ -31,9 +32,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                     Therese — Week 4
                   </span>
                 </a>
-                <NavLinks />
+                <ClientOnly>
+                  <NavLinks />
+                </ClientOnly>
               </div>
-              <NavUser />
+              <ClientOnly>
+                <NavUser />
+              </ClientOnly>
             </div>
           </nav>
           <main className="max-w-7xl mx-auto px-6 py-8">

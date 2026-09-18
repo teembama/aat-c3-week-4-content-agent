@@ -146,6 +146,7 @@ export interface PublishingQueueItem {
   subject_line?: string | null; // newsletter only
   preview_data: Record<string, unknown>;
   status: PublishStatus;
+  regeneration_count?: number;
   approved_by?: string | null;
   approved_at?: string | null;
   published_at?: string | null;

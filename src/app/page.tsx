@@ -19,10 +19,51 @@ const STATUS_LABELS: Record<string, { label: string; color: string; bg: string }
   failed: { label: "Failed", color: "text-[#c43c3c]", bg: "bg-red-50" },
 };
 
+type FilterKey = "review" | "published" | "failed";
+
+const FILTERS: Array<{
+  key: FilterKey;
+  label: string;
+  statuses: string[];
+  icon: string;
+  text: string;
+  activeBg: string;
+  activeBorder: string;
+}> = [
+  {
+    key: "review",
+    label: "Needs Review",
+    statuses: ["review"],
+    icon: "◉",
+    text: "text-[#b5760a]",
+    activeBg: "bg-amber-50",
+    activeBorder: "border-amber-400",
+  },
+  {
+    key: "published",
+    label: "Published",
+    statuses: ["published", "approved"],
+    icon: "✓",
+    text: "text-[#2d7a4f]",
+    activeBg: "bg-green-50",
+    activeBorder: "border-green-400",
+  },
+  {
+    key: "failed",
+    label: "Failed",
+    statuses: ["failed"],
+    icon: "✗",
+    text: "text-[#c43c3c]",
+    activeBg: "bg-red-50",
+    activeBorder: "border-red-400",
+  },
+];
+
 function DashboardContent() {
   const [requests, setRequests] = useState<ContentRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [activeFilter, setActiveFilter] = useState<FilterKey | null>(null);
 
   async function loadRequests() {
     const { data } = await supabase
@@ -33,16 +74,12 @@ function DashboardContent() {
 
   useEffect(() => { loadRequests(); }, []);
 
-  // Pipeline counts
-  const counts = {
-    active: requests.filter((r) => ["researching", "generating", "evaluating", "revising", "adapting"].includes(r.status)).length,
-    review: requests.filter((r) => r.status === "review").length,
-    approved: requests.filter((r) => r.status === "approved").length,
-    published: requests.filter((r) => r.status === "published").length,
-    failed: requests.filter((r) => r.status === "failed").length,
-  };
-
   const reviewItems = requests.filter((r) => r.status === "review");
+
+  const activeStatuses = FILTERS.find((f) => f.key === activeFilter)?.statuses;
+  const visibleRequests = activeStatuses
+    ? requests.filter((r) => activeStatuses.includes(r.status))
+    : requests;
 
   return (
     <div>
@@ -64,23 +101,29 @@ function DashboardContent() {
         </div>
       ) : (
         <>
-          {/* Pipeline summary */}
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-8">
-            {[
-              { label: "In Progress", count: counts.active, color: "text-[#3b6fa0]", icon: "◉" },
-              { label: "Needs Review", count: counts.review, color: "text-[#b5760a]", icon: "◉" },
-              { label: "Approved", count: counts.approved, color: "text-[#2d7a4f]", icon: "◉" },
-              { label: "Published", count: counts.published, color: "text-[#2d7a4f]", icon: "✓" },
-              { label: "Failed", count: counts.failed, color: "text-[#c43c3c]", icon: "✗" },
-            ].map((item) => (
-              <div key={item.label} className="bg-white rounded-xl border border-[#d1cbc6] p-4">
-                <div className="flex items-center justify-between">
-                  <span className="text-2xl font-bold text-[#1a1a1a]">{item.count}</span>
-                  <span className={`text-lg ${item.color}`}>{item.icon}</span>
-                </div>
-                <p className="text-xs text-[#8a847f] mt-1 font-medium">{item.label}</p>
-              </div>
-            ))}
+          {/* Pipeline filters */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-8">
+            {FILTERS.map((f) => {
+              const count = requests.filter((r) => f.statuses.includes(r.status)).length;
+              const isActive = activeFilter === f.key;
+              return (
+                <button
+                  key={f.key}
+                  type="button"
+                  aria-pressed={isActive}
+                  onClick={() => setActiveFilter(isActive ? null : f.key)}
+                  className={`text-left rounded-xl border p-4 transition-all hover:border-[#8a847f] hover:shadow-sm ${
+                    isActive ? `${f.activeBg} ${f.activeBorder} ring-1 ring-inset ${f.activeBorder}` : "bg-white border-[#d1cbc6]"
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-2xl font-bold text-[#1a1a1a]">{count}</span>
+                    <span className={`text-lg ${f.text}`}>{f.icon}</span>
+                  </div>
+                  <p className="text-xs text-[#8a847f] mt-1 font-medium">{f.label}</p>
+                </button>
+              );
+            })}
           </div>
 
           {/* Action required */}
@@ -112,9 +155,18 @@ function DashboardContent() {
 
           {/* All requests */}
           <div>
-            <h2 className="text-sm font-semibold text-[#1a1a1a] uppercase tracking-wider mb-3">
-              All Content Requests
-            </h2>
+            <div className="flex items-center justify-between mb-3 gap-3">
+              <h2 className="text-sm font-semibold text-[#1a1a1a] uppercase tracking-wider">
+                {activeFilter ? FILTERS.find((f) => f.key === activeFilter)?.label : "All Content Requests"}
+                {activeFilter && <span className="text-[#8a847f] font-medium normal-case"> ({visibleRequests.length})</span>}
+              </h2>
+              {activeFilter && (
+                <button onClick={() => setActiveFilter(null)}
+                  className="text-xs text-[#5a5550] hover:text-[#1a1a1a] underline flex-shrink-0">
+                  Clear filter
+                </button>
+              )}
+            </div>
             {loading ? (
               <div className="text-center py-12 text-[#8a847f]">Loading…</div>
             ) : requests.length === 0 ? (
@@ -124,9 +176,13 @@ function DashboardContent() {
                   Create your first request →
                 </button>
               </div>
+            ) : visibleRequests.length === 0 ? (
+              <div className="text-center py-12 bg-white rounded-xl border border-[#d1cbc6] text-[#8a847f]">
+                No requests match this filter.
+              </div>
             ) : (
               <div className="space-y-2">
-                {requests.map((req) => {
+                {visibleRequests.map((req) => {
                   const status = STATUS_LABELS[req.status] || STATUS_LABELS.draft;
                   const hasWarnings = req.notifications?.some((n) => n.level === "warning" || n.level === "error");
                   return (

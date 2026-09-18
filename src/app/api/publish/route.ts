@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServiceSupabase } from "@/lib/supabase";
 import { getAuthUser } from "@/lib/auth-api";
-import { sendDiscordNotification, DiscordAction } from "@/lib/discord";
+import { sendApprovalNotification, sendReviewNotification, DiscordAction } from "@/lib/discord";
 
 export const maxDuration = 10;
 
-const VALID_ACTIONS = ["approve", "reject", "publish", "unpublish", "unapprove"];
+const VALID_ACTIONS = ["approve", "reject", "publish", "unpublish", "unapprove", "unreject"];
 
 const DISCORD_ACTION_MAP: Record<string, DiscordAction> = {
   approve: "approved",
@@ -102,6 +102,15 @@ export async function POST(req: NextRequest) {
       await sb.from("publishing_queue").update({ approved_by_id: null }).eq("id", queue_id);
     }
 
+    // Undo a rejection without regenerating the content — the existing
+    // formatted_content goes back in front of approvers as-is.
+    if (action === "unreject") {
+      if (item.status !== "rejected") {
+        return NextResponse.json({ success: false, error: `Cannot undo rejection: status is "${item.status}".` }, { status: 400 });
+      }
+      await sb.from("publishing_queue").update({ status: "pending_review" }).eq("id", queue_id);
+    }
+
     if (action === "unpublish") {
       if (item.status !== "published") {
         return NextResponse.json({ success: false, error: `Cannot unpublish: status is "${item.status}".` }, { status: 400 });
@@ -131,16 +140,30 @@ export async function POST(req: NextRequest) {
 
     // Discord notification — best-effort, never fails the request.
     const discordAction = DISCORD_ACTION_MAP[action];
-    if (discordAction) {
+    if (discordAction || action === "unreject") {
       const { data: parentRequest } = await sb.from("content_requests").select("topic").eq("id", item.request_id).single();
       const appUrl = process.env.NEXT_PUBLIC_APP_URL || req.headers.get("origin") || req.nextUrl.origin;
-      await sendDiscordNotification({
-        action: discordAction,
-        channel: item.channel,
-        topic: parentRequest?.topic || "Untitled request",
-        performedBy: authUser.display_name,
-        requestUrl: `${appUrl}/request/${item.request_id}`,
-      });
+      const topic = parentRequest?.topic || "Untitled request";
+      const requestUrl = `${appUrl}/request/${item.request_id}`;
+
+      if (discordAction) {
+        await sendApprovalNotification({
+          action: discordAction,
+          channel: item.channel,
+          topic,
+          performedBy: authUser.display_name,
+          requestUrl,
+        });
+      } else {
+        // Back in the review queue, so it belongs in the review channel.
+        await sendReviewNotification({
+          topic,
+          channel: item.channel,
+          submittedBy: authUser.display_name,
+          requestUrl,
+          detail: "A previous rejection was undone — this content is pending review again.",
+        });
+      }
     }
 
     return NextResponse.json({ success: true, data: { action, queue_id } });

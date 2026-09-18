@@ -34,6 +34,9 @@ function channelLabel(channel: string): string {
   return channel === "x" ? "X (Twitter)" : channel.charAt(0).toUpperCase() + channel.slice(1);
 }
 
+// Mirrors MAX_REGENERATIONS in src/app/api/regenerate-channel/route.ts
+const MAX_REGENERATIONS = 2;
+
 function RequestDetailContent() {
   const params = useParams();
   const id = params.id as string;
@@ -131,9 +134,26 @@ function RequestDetailContent() {
         reject: "Rejected.",
         unpublish: "Unpublished.",
         unapprove: "Approval revoked.",
+        unreject: "Rejection undone — back in review.",
       };
       if (json.success) toast.success(SUCCESS_LABELS[action] || "Done.");
       else toast.error(json.error || "Failed.");
+      loadData();
+    } catch { toast.error("Network error."); }
+    finally { setActionLoading(null); }
+  }
+
+  async function regenerateChannel(q: PublishingQueueItem) {
+    setActionLoading(q.id);
+    try {
+      const res = await fetch("/api/regenerate-channel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) },
+        body: JSON.stringify({ request_id: id, draft_id: q.draft_id, channel: q.channel }),
+      });
+      const json = await res.json();
+      if (json.success) toast.success(`${channelLabel(q.channel)} regenerated — back in review.`);
+      else toast.error(json.error || "Regeneration failed.");
       loadData();
     } catch { toast.error("Network error."); }
     finally { setActionLoading(null); }
@@ -263,47 +283,6 @@ function RequestDetailContent() {
             className="px-5 py-2.5 bg-[#1f1823] text-white text-sm font-medium rounded-lg hover:bg-[#3d3347] disabled:opacity-50 transition-colors">
             {actionLoading === "generate" ? "Generating — takes about 1-2 minutes…" : request.status === "failed" ? "Retry Generation" : "Generate Article Options"}
           </button>
-        </div>
-      )}
-
-      {/* Research sources */}
-      {sources.length > 0 && (
-        <div className="bg-white rounded-xl border border-[#d1cbc6] p-5">
-          <h2 className="text-sm font-semibold text-[#1a1a1a] uppercase tracking-wider mb-3">
-            Research Sources ({sources.length})
-          </h2>
-          <div className="space-y-3">
-            {sources.map((s, i) => {
-              const quality = SOURCE_QUALITY[s.source_type] || SOURCE_QUALITY.web_search;
-              return (
-                <div key={s.id} className="border border-[#e8e3df] rounded-lg p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 mb-0.5">
-                        <span className="text-[10px] font-mono text-[#8a847f]">src_{String(i + 1).padStart(3, "0")}</span>
-                        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${quality.color}`}>{quality.label}</span>
-                      </div>
-                      <p className="font-medium text-[#1a1a1a] text-sm">{s.title}</p>
-                      <a href={s.url} target="_blank" rel="noopener noreferrer"
-                        className="text-xs text-[#3b6fa0] hover:underline truncate block">{s.url}</a>
-                    </div>
-                  </div>
-                  {Array.isArray(s.key_claims) && s.key_claims.length > 0 && (
-                    <div className="mt-2 pt-2 border-t border-[#e8e3df]">
-                      <p className="text-[10px] font-semibold text-[#8a847f] uppercase tracking-wider mb-1">Evidence Extracted</p>
-                      <ul className="space-y-0.5">
-                        {s.key_claims.map((c, ci) => (
-                          <li key={ci} className="text-xs text-[#5a5550] flex gap-1.5">
-                            <span className="text-[#2d7a4f] mt-0.5">•</span>{c}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
         </div>
       )}
 
@@ -488,9 +467,82 @@ function RequestDetailContent() {
                     })} disabled={!!actionLoading}
                       className="px-3 py-1.5 text-xs font-medium text-[#b5760a] border border-amber-200 bg-amber-50 rounded-lg hover:bg-amber-100 disabled:opacity-50">Unpublish</button>
                   )}
+                  {q.status === "rejected" && (() => {
+                    const used = q.regeneration_count ?? 0;
+                    const remaining = MAX_REGENERATIONS - used;
+                    return (
+                      <>
+                        {remaining > 0 ? (
+                          <button onClick={() => setPendingAction({
+                            title: "Regenerate this channel?",
+                            description: `Rewrite the ${channelLabel(q.channel)} version from the selected article and send it back for review. You have ${remaining} of ${MAX_REGENERATIONS} regenerations left for this channel.`,
+                            tone: "default",
+                            confirmLabel: "Regenerate",
+                            run: () => regenerateChannel(q),
+                          })} disabled={!!actionLoading}
+                            className="px-3 py-1.5 bg-[#1f1823] text-white text-xs font-medium rounded-lg hover:bg-[#3d3347] disabled:opacity-50">
+                            {actionLoading === q.id ? "Regenerating…" : `Regenerate (${remaining}/${MAX_REGENERATIONS} remaining)`}
+                          </button>
+                        ) : (
+                          <p className="text-xs text-[#8a847f] italic">Maximum regenerations reached — handle manually</p>
+                        )}
+                        {isApprover && (
+                          <button onClick={() => setPendingAction({
+                            title: "Undo rejection?",
+                            description: `Return this ${channelLabel(q.channel)} content to pending review without regenerating it. The existing text is kept as-is.`,
+                            tone: "default",
+                            confirmLabel: "Undo Rejection",
+                            run: () => handleQueueAction(q.id, "unreject"),
+                          })} disabled={!!actionLoading}
+                            className="px-3 py-1.5 text-xs font-medium text-[#b5760a] border border-amber-200 bg-amber-50 rounded-lg hover:bg-amber-100 disabled:opacity-50">Undo Rejection</button>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Research sources */}
+      {sources.length > 0 && (
+        <div className="bg-white rounded-xl border border-[#d1cbc6] p-5">
+          <h2 className="text-sm font-semibold text-[#1a1a1a] uppercase tracking-wider mb-3">
+            Research Sources ({sources.length})
+          </h2>
+          <div className="space-y-3">
+            {sources.map((s, i) => {
+              const quality = SOURCE_QUALITY[s.source_type] || SOURCE_QUALITY.web_search;
+              return (
+                <div key={s.id} className="border border-[#e8e3df] rounded-lg p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 mb-0.5">
+                        <span className="text-[10px] font-mono text-[#8a847f]">src_{String(i + 1).padStart(3, "0")}</span>
+                        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${quality.color}`}>{quality.label}</span>
+                      </div>
+                      <p className="font-medium text-[#1a1a1a] text-sm">{s.title}</p>
+                      <a href={s.url} target="_blank" rel="noopener noreferrer"
+                        className="text-xs text-[#3b6fa0] hover:underline truncate block">{s.url}</a>
+                    </div>
+                  </div>
+                  {Array.isArray(s.key_claims) && s.key_claims.length > 0 && (
+                    <div className="mt-2 pt-2 border-t border-[#e8e3df]">
+                      <p className="text-[10px] font-semibold text-[#8a847f] uppercase tracking-wider mb-1">Evidence Extracted</p>
+                      <ul className="space-y-0.5">
+                        {s.key_claims.map((c, ci) => (
+                          <li key={ci} className="text-xs text-[#5a5550] flex gap-1.5">
+                            <span className="text-[#2d7a4f] mt-0.5">•</span>{c}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
