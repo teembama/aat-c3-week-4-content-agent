@@ -9,11 +9,9 @@ import { useAuth } from "@/lib/auth-context";
 export default function LoginPage() {
   const router = useRouter();
   const { user, loading: authLoading } = useAuth();
-  const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     if (!authLoading && user) router.replace("/");
@@ -22,7 +20,6 @@ export default function LoginPage() {
   async function handleSignIn(e: React.FormEvent) {
     e.preventDefault();
     setSubmitting(true);
-    setNotice(null);
     try {
       const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
       if (error) {
@@ -36,44 +33,6 @@ export default function LoginPage() {
     }
   }
 
-  async function handleSignUp(e: React.FormEvent) {
-    e.preventDefault();
-    setSubmitting(true);
-    setNotice(null);
-    try {
-      const { data, error } = await supabase.auth.signUp({ email: email.trim(), password });
-      if (error) {
-        toast.error(error.message);
-        return;
-      }
-
-      const newUser = data.user;
-      if (newUser) {
-        const displayName = email.trim().split("@")[0];
-        const { error: profileErr } = await supabase.from("user_profiles").insert({
-          id: newUser.id,
-          email: email.trim(),
-          display_name: displayName,
-          role: "creator",
-        });
-        if (profileErr) {
-          // Non-fatal — the account exists either way; surface it for visibility.
-          toast.error(`Signed up, but couldn't create profile: ${profileErr.message}`);
-        }
-      }
-
-      if (data.session) {
-        toast.success("Account created.");
-        router.replace("/");
-      } else {
-        setNotice("Account created — check your email to confirm, then sign in.");
-        setMode("signin");
-      }
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
   return (
     <div className="min-h-screen bg-[#e1dbd7] flex items-center justify-center px-4">
       <div className="w-full max-w-sm bg-white border border-[#d1cbc6] rounded-xl p-6 shadow-sm">
@@ -82,34 +41,7 @@ export default function LoginPage() {
           <p className="text-xs text-[#8a847f] mt-1">Sign in to manage your content pipeline.</p>
         </div>
 
-        <div className="flex mb-5 rounded-lg bg-[#e8e3df] p-1">
-          <button
-            type="button"
-            onClick={() => setMode("signin")}
-            className={`flex-1 text-sm font-medium py-1.5 rounded-md transition-colors ${
-              mode === "signin" ? "bg-white text-[#1f1823] shadow-sm" : "text-[#5a5550]"
-            }`}
-          >
-            Sign In
-          </button>
-          <button
-            type="button"
-            onClick={() => setMode("signup")}
-            className={`flex-1 text-sm font-medium py-1.5 rounded-md transition-colors ${
-              mode === "signup" ? "bg-white text-[#1f1823] shadow-sm" : "text-[#5a5550]"
-            }`}
-          >
-            Sign Up
-          </button>
-        </div>
-
-        {notice && (
-          <div className="mb-4 rounded-lg bg-blue-50 border border-blue-100 px-3 py-2.5 text-xs text-blue-800">
-            {notice}
-          </div>
-        )}
-
-        <form onSubmit={mode === "signin" ? handleSignIn : handleSignUp} className="space-y-4">
+        <form onSubmit={handleSignIn} className="space-y-4">
           <div>
             <label htmlFor="email" className="block text-sm font-medium text-[#1a1a1a] mb-1">
               Email
@@ -145,9 +77,13 @@ export default function LoginPage() {
             disabled={submitting}
             className="w-full px-4 py-2.5 bg-[#1f1823] text-white text-sm font-medium rounded-lg hover:bg-[#3d3347] disabled:opacity-50 transition-colors"
           >
-            {submitting ? "Please wait…" : mode === "signin" ? "Sign In" : "Sign Up"}
+            {submitting ? "Please wait…" : "Sign In"}
           </button>
         </form>
+
+        <p className="text-[11px] text-[#8a847f] text-center mt-5">
+          Accounts are created by an administrator.
+        </p>
       </div>
     </div>
   );

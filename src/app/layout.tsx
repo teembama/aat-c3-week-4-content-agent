@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Toaster } from "react-hot-toast";
 import { AuthProvider } from "@/lib/auth-context";
+import { NavLinks } from "@/components/NavLinks";
 import { NavUser } from "@/components/NavUser";
 import "./globals.css";
 
@@ -30,14 +31,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                     Therese — Week 4
                   </span>
                 </a>
-                <div className="hidden sm:flex items-center gap-1 ml-4">
-                  <a href="/" className="text-sm text-white/70 hover:text-white px-3 py-1.5 rounded-md hover:bg-white/10 transition-colors">
-                    Dashboard
-                  </a>
-                  <a href="/queue" className="text-sm text-white/70 hover:text-white px-3 py-1.5 rounded-md hover:bg-white/10 transition-colors">
-                    Publishing Queue
-                  </a>
-                </div>
+                <NavLinks />
               </div>
               <NavUser />
             </div>
