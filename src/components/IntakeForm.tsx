@@ -6,7 +6,7 @@ import { ToneOption } from "@/types";
 import { getAuthHeaders } from "@/lib/auth-context";
 
 interface IntakeFormProps {
-  onSuccess: () => void;
+  onSuccess: (requestId: string) => void;
 }
 
 interface ValidationIssue {
@@ -135,7 +135,10 @@ export function IntakeForm({ onSuccess }: IntakeFormProps) {
       }
 
       toast.success("Request submitted — research is starting.");
-      onSuccess();
+      // Stay in the submitting state through the hand-off, so the button never
+      // flips back to idle while the detail page is still loading.
+      onSuccess(data.data.request_id);
+      return;
     } catch (err: any) {
       if (err?.name === "AbortError") {
         // User cancelled — already handled

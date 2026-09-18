@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { ContentRequest } from "@/types";
 import { IntakeForm } from "@/components/IntakeForm";
@@ -60,6 +61,7 @@ const FILTERS: Array<{
 ];
 
 function DashboardContent() {
+  const router = useRouter();
   const [requests, setRequests] = useState<ContentRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -97,7 +99,7 @@ function DashboardContent() {
 
       {showForm ? (
         <div className="mb-8">
-          <IntakeForm onSuccess={() => { setShowForm(false); loadRequests(); }} />
+          <IntakeForm onSuccess={(requestId) => { router.push(`/request/${requestId}`); }} />
         </div>
       ) : (
         <>

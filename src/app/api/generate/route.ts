@@ -28,12 +28,14 @@ async function isCancelled(sb: any, requestId: string): Promise<boolean> {
   return !!data?.cancelled;
 }
 
+const VALID_STATUSES = ["pass", "revise", "reject"];
+
 /**
- * Extract and verify an article's claims against the source content, then
- * evaluate the article using those verification results. Used both for the
- * initial draft and again after every revision, so the stored
- * claim_verification counts and overall_status always reflect the CURRENT
- * article text rather than a stale pre-revision snapshot.
+ * Verifies an article's claims against the sources AND scores the article, in
+ * one call — the model needs the article and the sources in front of it for
+ * both, so splitting them cost a full round-trip per article and per revision.
+ * Re-run after every revision, so the stored counts and overall_status always
+ * describe the CURRENT text rather than a stale pre-revision snapshot.
  */
 async function verifyAndEvaluate(
   articleMarkdown: string,
@@ -45,10 +47,7 @@ async function verifyAndEvaluate(
 ): Promise<{ verification: Verification; evaluation: EvaluationResult } | null> {
   if (await cancelled()) return null;
 
-  // Extraction and verification in a single round-trip — the model has the
-  // article and the sources in front of it either way, and splitting them cost
-  // a full extra call per article (and per revision).
-  const { result: claimsResult, cost: claimCost } = await callClaude<{
+  const { result, cost } = await callClaude<{
     claims: Array<{
       claim: string;
       claim_type: "statistic" | "factual" | "general" | "opinion";
@@ -56,34 +55,49 @@ async function verifyAndEvaluate(
       verification_status: "verified" | "unsupported" | "fabricated" | "contradicted" | "not_applicable";
       evidence: string;
     }>;
+    evaluation: any;
   }>(
-    `Extract all factual claims from this article, classify each as statistic/factual/general/opinion, and for each statistic or factual claim, verify it against the provided source content.
+    `You are a strict content editor. Do two things in one pass.
+
 ${SOURCE_TRUST_NOTE}
 
-claim_type:
-- "statistic" (numbers/percentages), "factual" (specific assertions), "general" (common knowledge/framing), "opinion" (editorial)
-- General framing like "Businesses are increasingly looking for automation" is type "general" and doesn't need a source.
-- Statistics and specific factual assertions MUST have a source.
+PART 1 — CLAIM VERIFICATION
+Extract all factual claims from this article. For each claim:
+- claim: the assertion
+- claim_type: statistic | factual | general | opinion
+- source_id: which source it references, or null
+- verification_status: verified | unsupported | fabricated | not_applicable (use not_applicable for general/opinion)
+- evidence: max 15 words explaining your verification
 
-verification_status — for "statistic" and "factual" claims, set exactly one of:
-- "verified": the source content directly supports this claim
-- "unsupported": the source exists but doesn't contain this information
-- "contradicted": the source says something different
-- "fabricated": the statistic/quote/detail appears invented (no source supports it)
-For "general" and "opinion" claims, set "not_applicable".
+Be strict — attribution alone is not enough, the source must actually contain the information.
 
-Be strict. Attribution alone is not enough — the source must ACTUALLY contain the claimed information.
-Keep "evidence" to ONE short sentence (max ~15 words) — a brief pointer to the supporting/contradicting text, not a full explanation. This keeps the response compact when there are many claims.
+PART 2 — EVALUATION
+Score 1-5 on: topic_relevance, source_grounding, factual_consistency, audience_fit, tone, seo_fit, clarity, completeness.
+- If ANY claim has verification_status fabricated → source_grounding 1, overall reject
+- If ANY claim unsupported → source_grounding 2, overall revise
+- A shorter honest article scores HIGHER than a padded one
 
-Return ONLY JSON: { "claims": [ { "claim": "...", "claim_type": "statistic", "source_id": "src_001", "verification_status": "verified", "evidence": "..." } ] }`,
-    `Article:\n${articleMarkdown}\n\nSource content:\n${sourceContext}`,
-    { maxTokens: 4096, stage: "claim_extraction_verification" }
+Return ONLY JSON:
+{
+  "claims": [{ "claim": "...", "claim_type": "statistic", "source_id": "src_001", "verification_status": "verified", "evidence": "..." }],
+  "evaluation": {
+    "overall_status": "pass" | "revise" | "reject",
+    "criteria": { "topic_relevance": 4, "source_grounding": 5, "factual_consistency": 5, "audience_fit": 4, "tone": 4, "seo_fit": 4, "clarity": 4, "completeness": 4 },
+    "weak_claims": [],
+    "fabricated_content": [],
+    "recommended_changes": []
+  }
+}`,
+    `Topic: ${request.topic} | Audience: ${request.audience} | Keyword: ${keyword}
+
+Article:\n${articleMarkdown}\n\nSource content:\n${sourceContext}`,
+    { maxTokens: 4096, stage: "claim_verification_evaluation" }
   );
-  costs.push(claimCost);
+  costs.push(cost);
 
   // Only sourced claim types gate the article — general framing and opinion
   // were never counted, and still aren't.
-  const sourcedClaims = (claimsResult.claims || []).filter(
+  const sourcedClaims = (result.claims || []).filter(
     (c) => c.claim_type === "statistic" || c.claim_type === "factual"
   );
 
@@ -95,36 +109,26 @@ Return ONLY JSON: { "claims": [ { "claim": "...", "claim_type": "statistic", "so
     ),
   };
 
-  if (await cancelled()) return null;
+  const raw = result.evaluation || {};
 
-  const hasFabrication = verification.fabricated.length > 0;
-  const hasUnverified = verification.unverified.length > 0;
+  // Fall back to the claim counts only when the model omitted or mangled the
+  // verdict — a valid verdict is never overridden.
+  const overallStatus = VALID_STATUSES.includes(raw.overall_status)
+    ? raw.overall_status
+    : verification.fabricated.length > 0
+      ? "reject"
+      : verification.unverified.length > 0
+        ? "revise"
+        : "pass";
 
-  const { result: evaluation, cost: evalCost } = await callClaude<EvaluationResult>(
-    `You are a strict content editor. Score 1-5 on each criterion.
-
-CRITICAL: source_grounding and factual_consistency are the hardest gates.
-- If ANY claim was flagged as fabricated or contradicted → score source_grounding 1, overall "reject"
-- If claims are unsupported (source exists but doesn't say that) → score source_grounding 2, overall "revise"
-- Attribution without evidence is NOT sufficient for a pass.
-
-Criteria: topic_relevance, source_grounding, factual_consistency, audience_fit, tone, seo_fit, clarity, completeness.
-A shorter honest article scores HIGHER than a long fabricated one on completeness.
-
-"overall_status" MUST be exactly one of "pass", "revise", or "reject" — no other value.
-Return ONLY JSON: {"overall_status":"pass"|"revise"|"reject","criteria":{...},"weak_claims":[],"fabricated_content":[],"sections_needing_revision":[],"recommended_changes":[]}`,
-    `Topic: ${request.topic} | Audience: ${request.audience} | Keyword: ${keyword}
-Claim verification results:
-- Verified: ${verification.verified.length}
-- Unsupported: ${verification.unverified.length}
-- Fabricated/contradicted: ${verification.fabricated.length}
-${hasFabrication ? `FABRICATED CLAIMS: ${JSON.stringify(verification.fabricated)}` : ""}
-${hasUnverified ? `UNSUPPORTED CLAIMS: ${JSON.stringify(verification.unverified)}` : ""}
-
-Article:\n${articleMarkdown.slice(0, 4000)}`,
-    { stage: "content_evaluation" }
-  );
-  costs.push(evalCost);
+  const evaluation = {
+    overall_status: overallStatus,
+    criteria: raw.criteria || {},
+    weak_claims: raw.weak_claims || [],
+    fabricated_content: raw.fabricated_content || [],
+    sections_needing_revision: raw.sections_needing_revision || [],
+    recommended_changes: raw.recommended_changes || [],
+  } as EvaluationResult;
 
   return { verification, evaluation };
 }
