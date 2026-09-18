@@ -20,11 +20,11 @@ interface Verification {
 }
 
 /**
- * Extract claims from an article, verify each against the actual source
- * content, then evaluate the article using those verification results.
- * Used both for the initial draft and again after every revision, so the
- * stored claim_verification counts and overall_status always reflect the
- * CURRENT article text rather than a stale pre-revision snapshot.
+ * Extract and verify an article's claims against the source content, then
+ * evaluate the article using those verification results. Used both for the
+ * initial draft and again after every revision, so the stored
+ * claim_verification counts and overall_status always reflect the CURRENT
+ * article text rather than a stale pre-revision snapshot.
  */
 async function verifyAndEvaluate(
   articleMarkdown: string,
@@ -33,65 +33,55 @@ async function verifyAndEvaluate(
   keyword: string,
   costs: CostEntry[]
 ): Promise<{ verification: Verification; evaluation: EvaluationResult }> {
+  // Extraction and verification in a single round-trip — the model has the
+  // article and the sources in front of it either way, and splitting them cost
+  // a full extra call per article (and per revision).
   const { result: claimsResult, cost: claimCost } = await callClaude<{
     claims: Array<{
       claim: string;
-      source_id: string | null;
       claim_type: "statistic" | "factual" | "general" | "opinion";
+      source_id: string | null;
+      verification_status: "verified" | "unsupported" | "fabricated" | "contradicted" | "not_applicable";
+      evidence: string;
     }>;
   }>(
-    `Extract ALL factual claims from this article. For each claim identify:
-- claim: the specific assertion
-- source_id: which source ID it references (src_001, etc.), or null if unattributed
-- claim_type: "statistic" (numbers/percentages), "factual" (specific assertions), "general" (common knowledge/framing), "opinion" (editorial)
-
-General framing like "Businesses are increasingly looking for automation" is type "general" and doesn't need a source.
-Statistics and specific factual assertions MUST have a source.
-Return ONLY JSON: { "claims": [...] }`,
-    `Article:\n${articleMarkdown}`,
-    { maxTokens: 3072, stage: "claim_extraction" }
-  );
-  costs.push(claimCost);
-
-  const sourcedClaims = (claimsResult.claims || []).filter(
-    (c) => c.claim_type === "statistic" || c.claim_type === "factual"
-  );
-
-  let verification: Verification = { verified: [], unverified: [], fabricated: [] };
-
-  if (sourcedClaims.length > 0) {
-    const { result: verifyResult, cost: verifyCost } = await callClaude<{
-      results: Array<{
-        claim: string;
-        source_id: string | null;
-        status: "verified" | "unsupported" | "contradicted" | "fabricated";
-        evidence: string;
-      }>;
-    }>(
-      `Verify each claim against the actual source content provided.
+    `Extract all factual claims from this article, classify each as statistic/factual/general/opinion, and for each statistic or factual claim, verify it against the provided source content.
 ${SOURCE_TRUST_NOTE}
-For each claim, set "status" to exactly one of:
+
+claim_type:
+- "statistic" (numbers/percentages), "factual" (specific assertions), "general" (common knowledge/framing), "opinion" (editorial)
+- General framing like "Businesses are increasingly looking for automation" is type "general" and doesn't need a source.
+- Statistics and specific factual assertions MUST have a source.
+
+verification_status — for "statistic" and "factual" claims, set exactly one of:
 - "verified": the source content directly supports this claim
 - "unsupported": the source exists but doesn't contain this information
 - "contradicted": the source says something different
 - "fabricated": the statistic/quote/detail appears invented (no source supports it)
+For "general" and "opinion" claims, set "not_applicable".
 
 Be strict. Attribution alone is not enough — the source must ACTUALLY contain the claimed information.
 Keep "evidence" to ONE short sentence (max ~15 words) — a brief pointer to the supporting/contradicting text, not a full explanation. This keeps the response compact when there are many claims.
 
-Return ONLY JSON in exactly this shape (use these exact field names — "status" and "evidence", not "verdict"/"reasoning"/"explanation"):
-{ "results": [ { "claim": "...", "source_id": "src_001", "status": "verified", "evidence": "..." } ] }`,
-      `Claims to verify:\n${JSON.stringify(sourcedClaims, null, 2)}\n\nSource content:\n${sourceContext}`,
-      { maxTokens: 4096, stage: "claim_verification" }
-    );
-    costs.push(verifyCost);
+Return ONLY JSON: { "claims": [ { "claim": "...", "claim_type": "statistic", "source_id": "src_001", "verification_status": "verified", "evidence": "..." } ] }`,
+    `Article:\n${articleMarkdown}\n\nSource content:\n${sourceContext}`,
+    { maxTokens: 4096, stage: "claim_extraction_verification" }
+  );
+  costs.push(claimCost);
 
-    verification = {
-      verified: verifyResult.results?.filter((r) => r.status === "verified") || [],
-      unverified: verifyResult.results?.filter((r) => r.status === "unsupported") || [],
-      fabricated: verifyResult.results?.filter((r) => r.status === "fabricated" || r.status === "contradicted") || [],
-    };
-  }
+  // Only sourced claim types gate the article — general framing and opinion
+  // were never counted, and still aren't.
+  const sourcedClaims = (claimsResult.claims || []).filter(
+    (c) => c.claim_type === "statistic" || c.claim_type === "factual"
+  );
+
+  const verification: Verification = {
+    verified: sourcedClaims.filter((c) => c.verification_status === "verified"),
+    unverified: sourcedClaims.filter((c) => c.verification_status === "unsupported"),
+    fabricated: sourcedClaims.filter(
+      (c) => c.verification_status === "fabricated" || c.verification_status === "contradicted"
+    ),
+  };
 
   const hasFabrication = verification.fabricated.length > 0;
   const hasUnverified = verification.unverified.length > 0;
@@ -123,6 +113,158 @@ Article:\n${articleMarkdown.slice(0, 4000)}`,
   costs.push(evalCost);
 
   return { verification, evaluation };
+}
+
+interface ArticleContext {
+  sb: any;
+  requestId: string;
+  request: { topic: string; audience: string; tone: string; additional_context?: string | null };
+  sourceContext: string;
+  keyword: string;
+  costs: CostEntry[];
+  /** Serialized append — reads the latest notifications before writing. */
+  note: (n: PipelineNotification, status?: string) => Promise<unknown>;
+}
+
+/**
+ * Produces one article option end-to-end: generate → extract+verify claims →
+ * evaluate → revise if needed → store the draft. Self-contained so the angles
+ * can run concurrently; returns the draft id, or null if this angle produced
+ * nothing usable.
+ */
+async function generateOneArticle(ctx: ArticleContext, angle: string, index: number): Promise<string | null> {
+  const { sb, requestId, request, sourceContext, keyword, costs, note } = ctx;
+  const optionNumber = index + 1;
+
+  try {
+    if (index > 0) {
+      await note(info("generation", `Creating article option ${optionNumber}…`));
+    }
+
+    // ── STEP 1: Generate article from actual source content ──
+    const { result: article, cost: genCost } = await callClaude<{
+      angle_description: string;
+      article_markdown: string;
+      source_references: Array<{ source_id: string; title: string; url: string }>;
+      sourcing_gaps: string[];
+      confidence: string;
+    }>(
+      `You are an expert content writer. Write ONE article with ${angle}.
+
+${SOURCE_TRUST_NOTE}
+
+CRITICAL RULES — violating these makes the article unusable:
+1. NEVER invent statistics, percentages, study results, or quotes.
+2. Every factual claim MUST come from the provided source content below.
+   Reference sources by their ID (e.g., "According to [Source Title] (src_001)...").
+3. If sources don't support a comprehensive article, write SHORTER (500-700 words)
+   rather than padding with unsourced content.
+4. External links must be REAL URLs from the sources. Never generate URLs.
+5. If you cannot confidently write this article from the available sources,
+   set confidence to "insufficient" and explain in sourcing_gaps.
+
+SEO rules:
+- Primary keyword in title and first 100 words.
+- One H1, H2 sections, H3 where needed. Short paragraphs (2-3 sentences).
+
+Return ONLY JSON:
+{
+  "angle_description": "one sentence",
+  "article_markdown": "full article in markdown",
+  "source_references": [{"source_id": "src_001", "title": "...", "url": "..."}],
+  "sourcing_gaps": ["topics that couldn't be covered due to limited sources"],
+  "confidence": "sufficient" | "partial" | "insufficient"
+}`,
+      `Topic: ${request.topic}\nAudience: ${request.audience}\nTone: ${request.tone}\nKeyword: ${keyword}\n${request.additional_context ? `Context: ${request.additional_context}` : ""}\n\n${sourceContext}`,
+      { maxTokens: 4096, stage: "article_generation" }
+    );
+    costs.push(genCost);
+
+    if (article.confidence === "insufficient") {
+      await note(warn("generation",
+        `Option ${optionNumber}: The AI determined there isn't enough source material for a responsible article on this angle.`,
+        article.sourcing_gaps?.join("; ")
+      ));
+      return null;
+    }
+
+    // ── STEPS 2-3: Extract + verify claims, then evaluate ──
+    await note(info("evaluation", `Checking claims in option ${optionNumber}…`), "evaluating");
+
+    let finalMarkdown = article.article_markdown;
+    let { verification, evaluation } = await verifyAndEvaluate(finalMarkdown, sourceContext, request, keyword, costs);
+    let finalEval = evaluation;
+
+    // ── STEP 4: Revise if needed (max 2), re-verifying the REVISED article each time ──
+    const revisionHistory: any[] = [];
+
+    if (finalEval.overall_status === "revise" || finalEval.overall_status === "reject") {
+      for (let rev = 0; rev < 2; rev++) {
+        await note(info("revision", `Improving option ${optionNumber} (revision ${rev + 1})…`), "revising");
+
+        try {
+          const { result: revised, cost: revCost } = await callClaude<{
+            article_markdown: string;
+            changes_made: string[];
+          }>(
+            `Revise this article. REMOVE all fabricated or unsupported claims entirely — do not try to rephrase them, just cut them. Keep verified content. Return ONLY JSON: {"article_markdown":"...","changes_made":["..."]}`,
+            `Issues:\n${JSON.stringify({
+              fabricated: verification.fabricated,
+              unsupported: verification.unverified,
+              changes: finalEval.recommended_changes,
+            })}\n\nArticle:\n${finalMarkdown}`,
+            { maxTokens: 4096, stage: "revision" }
+          );
+          costs.push(revCost);
+
+          finalMarkdown = revised.article_markdown;
+          revisionHistory.push({ iteration: rev + 1, changes_made: revised.changes_made, revised_at: new Date().toISOString() });
+
+          // Re-run full extraction + verification + evaluation against the REVISED article —
+          // never trust the pre-revision counts, since the revision may have fixed some
+          // issues, missed others, or introduced new ones.
+          const reCheck = await verifyAndEvaluate(finalMarkdown, sourceContext, request, keyword, costs);
+          verification = reCheck.verification;
+          finalEval = reCheck.evaluation;
+
+          if (finalEval.overall_status === "pass") break;
+        } catch {
+          await note(warn("revision", `Revision ${rev + 1} for option ${optionNumber} failed — keeping current version.`));
+          break;
+        }
+      }
+    }
+
+    // ── Store draft ──
+    const { data: draft } = await sb.from("content_drafts").insert({
+      request_id: requestId,
+      draft_number: optionNumber,
+      angle_description: article.angle_description || `Option ${optionNumber}`,
+      article_markdown: finalMarkdown,
+      article_html: markdownToHtml(finalMarkdown),
+      source_references: article.source_references || [],
+      evaluation: {
+        ...finalEval,
+        claim_verification: {
+          verified_count: verification.verified.length,
+          unsupported_count: verification.unverified.length,
+          fabricated_count: verification.fabricated.length,
+        },
+      },
+      revision_history: revisionHistory,
+      status: "draft",
+    }).select("id").single();
+
+    await note(success("generation",
+      `Option ${optionNumber} ready — ${finalEval.overall_status === "pass" ? "passed verification" : "flagged for your review"}.`
+    ));
+
+    return draft?.id ?? null;
+  } catch (err) {
+    await note(warn("generation", `Option ${optionNumber} could not be generated.`,
+      err instanceof Error ? err.message : "Unknown error"));
+    return null;
+  }
 }
 
 /**
@@ -243,156 +385,49 @@ export async function POST(req: NextRequest) {
       "a trend-analysis angle exploring where things are heading",
     ];
 
-    const draftIds: string[] = [];
+    // The angles run concurrently, so they can't share an in-memory
+    // notifications array — each append re-reads the current list from the DB,
+    // and the writes are chained so two of them can't interleave.
+    let notifyChain: Promise<unknown> = Promise.resolve();
+    const note = (n: PipelineNotification, status?: string) => {
+      notifyChain = notifyChain
+        .then(async () => {
+          const { data } = await sb.from("content_requests").select("notifications").eq("id", request_id).single();
+          const current: PipelineNotification[] = data?.notifications || [];
+          current.push(n);
+          const patch: Record<string, unknown> = { notifications: current };
+          if (status) patch.status = status;
+          await sb.from("content_requests").update(patch).eq("id", request_id);
+        })
+        .catch(() => { /* a dropped notification must not fail generation */ });
+      return notifyChain;
+    };
 
-    for (let i = 0; i < angles.length; i++) {
-      try {
-        if (i > 0) {
-          notifications.push(info("generation", `Creating article option ${i + 1}…`));
-          await sb.from("content_requests").update({ notifications }).eq("id", request_id);
-        }
+    const ctx: ArticleContext = { sb, requestId: request_id, request, sourceContext, keyword, costs, note };
 
-        // ── STEP 1: Generate article from actual source content ──
-        const { result: article, cost: genCost } = await callClaude<{
-          angle_description: string;
-          article_markdown: string;
-          source_references: Array<{ source_id: string; title: string; url: string }>;
-          sourcing_gaps: string[];
-          confidence: string;
-        }>(
-          `You are an expert content writer. Write ONE article with ${angles[i]}.
+    const results = await Promise.allSettled(
+      angles.map((angle, i) => generateOneArticle(ctx, angle, i))
+    );
 
-${SOURCE_TRUST_NOTE}
+    const draftIds: string[] = results
+      .map((r) => (r.status === "fulfilled" ? r.value : null))
+      .filter((id): id is string => !!id);
 
-CRITICAL RULES — violating these makes the article unusable:
-1. NEVER invent statistics, percentages, study results, or quotes.
-2. Every factual claim MUST come from the provided source content below.
-   Reference sources by their ID (e.g., "According to [Source Title] (src_001)...").
-3. If sources don't support a comprehensive article, write SHORTER (500-700 words)
-   rather than padding with unsourced content.
-4. External links must be REAL URLs from the sources. Never generate URLs.
-5. If you cannot confidently write this article from the available sources,
-   set confidence to "insufficient" and explain in sourcing_gaps.
-
-SEO rules:
-- Primary keyword in title and first 100 words.
-- One H1, H2 sections, H3 where needed. Short paragraphs (2-3 sentences).
-
-Return ONLY JSON:
-{
-  "angle_description": "one sentence",
-  "article_markdown": "full article in markdown",
-  "source_references": [{"source_id": "src_001", "title": "...", "url": "..."}],
-  "sourcing_gaps": ["topics that couldn't be covered due to limited sources"],
-  "confidence": "sufficient" | "partial" | "insufficient"
-}`,
-          `Topic: ${request.topic}\nAudience: ${request.audience}\nTone: ${request.tone}\nKeyword: ${keyword}\n${request.additional_context ? `Context: ${request.additional_context}` : ""}\n\n${sourceContext}`,
-          { maxTokens: 4096, stage: "article_generation" }
-        );
-        costs.push(genCost);
-
-        if (article.confidence === "insufficient") {
-          notifications.push(warn("generation",
-            `Option ${i + 1}: The AI determined there isn't enough source material for a responsible article on this angle.`,
-            article.sourcing_gaps?.join("; ")
-          ));
-          await sb.from("content_requests").update({ notifications }).eq("id", request_id);
-          continue; // Skip this angle
-        }
-
-        // ── STEPS 2-4: Extract claims, verify against sources, evaluate ──
-        notifications.push(info("evaluation", `Checking claims in option ${i + 1}…`));
-        await sb.from("content_requests").update({ status: "evaluating", notifications }).eq("id", request_id);
-
-        let finalMarkdown = article.article_markdown;
-        let { verification, evaluation } = await verifyAndEvaluate(finalMarkdown, sourceContext, request, keyword, costs);
-        let finalEval = evaluation;
-
-        // ── STEP 5: Revise if needed (max 2), re-verifying the REVISED article each time ──
-        const revisionHistory: any[] = [];
-
-        if (finalEval.overall_status === "revise" || finalEval.overall_status === "reject") {
-          for (let rev = 0; rev < 2; rev++) {
-            notifications.push(info("revision", `Improving option ${i + 1} (revision ${rev + 1})…`));
-            await sb.from("content_requests").update({ status: "revising", notifications }).eq("id", request_id);
-
-            try {
-              const { result: revised, cost: revCost } = await callClaude<{
-                article_markdown: string;
-                changes_made: string[];
-              }>(
-                `Revise this article. REMOVE all fabricated or unsupported claims entirely — do not try to rephrase them, just cut them. Keep verified content. Return ONLY JSON: {"article_markdown":"...","changes_made":["..."]}`,
-                `Issues:\n${JSON.stringify({
-                  fabricated: verification.fabricated,
-                  unsupported: verification.unverified,
-                  changes: finalEval.recommended_changes,
-                })}\n\nArticle:\n${finalMarkdown}`,
-                { maxTokens: 4096, stage: "revision" }
-              );
-              costs.push(revCost);
-
-              finalMarkdown = revised.article_markdown;
-              revisionHistory.push({ iteration: rev + 1, changes_made: revised.changes_made, revised_at: new Date().toISOString() });
-
-              await sb.from("content_requests").update({ status: "evaluating", notifications }).eq("id", request_id);
-
-              // Re-run full extraction + verification + evaluation against the REVISED article —
-              // never trust the pre-revision counts, since the revision may have fixed some
-              // issues, missed others, or introduced new ones.
-              const reCheck = await verifyAndEvaluate(finalMarkdown, sourceContext, request, keyword, costs);
-              verification = reCheck.verification;
-              finalEval = reCheck.evaluation;
-
-              if (finalEval.overall_status === "pass") break;
-            } catch {
-              notifications.push(warn("revision", `Revision ${rev + 1} for option ${i + 1} failed — keeping current version.`));
-              break;
-            }
-          }
-        }
-
-        // ── Store draft ──
-        const { data: draft } = await sb.from("content_drafts").insert({
-          request_id,
-          draft_number: i + 1,
-          angle_description: article.angle_description || `Option ${i + 1}`,
-          article_markdown: finalMarkdown,
-          article_html: markdownToHtml(finalMarkdown),
-          source_references: article.source_references || [],
-          evaluation: {
-            ...finalEval,
-            claim_verification: {
-              verified_count: verification.verified.length,
-              unsupported_count: verification.unverified.length,
-              fabricated_count: verification.fabricated.length,
-            },
-          },
-          revision_history: revisionHistory,
-          status: "draft",
-        }).select("id").single();
-
-        if (draft) draftIds.push(draft.id);
-        notifications.push(success("generation", `Option ${i + 1} ready — ${finalEval.overall_status === "pass" ? "passed verification" : "flagged for your review"}.`));
-        await sb.from("content_requests").update({ notifications }).eq("id", request_id);
-
-      } catch (err) {
-        notifications.push(warn("generation", `Option ${i + 1} could not be generated.`,
-          err instanceof Error ? err.message : "Unknown error"));
-        await sb.from("content_requests").update({ notifications }).eq("id", request_id);
-      }
-    }
+    // Let any queued notification writes land before the final status write,
+    // or a late append would overwrite it.
+    await notifyChain;
 
     if (draftIds.length === 0) {
-      notifications.push(error("generation", "No articles could be generated. Please add more source material and try again."));
-      await sb.from("content_requests").update({ status: "failed", notifications }).eq("id", request_id);
+      await note(error("generation", "No articles could be generated. Please add more source material and try again."), "failed");
+      await notifyChain;
       return NextResponse.json({ success: false, error: "Generation failed." }, { status: 500 });
     }
 
     const totalCost = costs.reduce((sum, c) => sum + c.cost_usd, 0);
-    notifications.push(success("evaluation",
+    await note(success("evaluation",
       `${draftIds.length} option${draftIds.length > 1 ? "s" : ""} ready for review. Estimated cost: $${totalCost.toFixed(4)}`
-    ));
-    await sb.from("content_requests").update({ status: "review", notifications }).eq("id", request_id);
+    ), "review");
+    await notifyChain;
 
     // Separate best-effort update so generation still succeeds before the
     // article_regeneration_count migration has been applied.
