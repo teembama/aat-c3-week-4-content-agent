@@ -2,8 +2,20 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServiceSupabase } from "@/lib/supabase";
 import { getAuthUser } from "@/lib/auth-api";
 import { sendApprovalNotification, sendReviewNotification, DiscordAction } from "@/lib/discord";
+import { sendNewsletter } from "@/lib/email";
+import { success, warn, error } from "@/lib/notifications";
+import { PipelineNotification } from "@/types";
 
-export const maxDuration = 10;
+// Sending to many subscribers takes longer than a status flip.
+export const maxDuration = 60;
+
+/** Appends one notification to a request's activity trail. Best-effort. */
+async function appendRequestNotification(sb: any, requestId: string, note: PipelineNotification) {
+  const { data: row } = await sb.from("content_requests").select("notifications").eq("id", requestId).single();
+  const notifications: PipelineNotification[] = row?.notifications || [];
+  notifications.push(note);
+  await sb.from("content_requests").update({ notifications }).eq("id", requestId);
+}
 
 const VALID_ACTIONS = ["approve", "reject", "publish", "unpublish", "unapprove", "unreject"];
 
@@ -84,10 +96,63 @@ export async function POST(req: NextRequest) {
           error: "Content must be approved before publishing. Current status: " + item.status,
         }, { status: 400 });
       }
-      await sb.from("publishing_queue").update({
-        status: "published",
-        published_at: new Date().toISOString(),
-      }).eq("id", queue_id);
+
+      // Publishing the newsletter channel actually sends it. A total send
+      // failure leaves the item approved so the user can retry.
+      if (item.channel === "newsletter") {
+        const { data: subscribers } = await sb
+          .from("newsletter_subscribers")
+          .select("email")
+          .eq("active", true);
+
+        const emails = (subscribers || []).map((s: any) => s.email).filter(Boolean);
+        if (emails.length === 0) {
+          return NextResponse.json({
+            success: false,
+            error: "No subscribers to send to. Add subscribers in the Subscribers page first.",
+          }, { status: 400 });
+        }
+
+        const sendResult = await sendNewsletter({
+          to: emails,
+          subject: item.subject_line || "Newsletter",
+          content: item.formatted_content || "",
+        });
+
+        if (!sendResult.success) {
+          await appendRequestNotification(sb, item.request_id,
+            error("publishing", `Newsletter send failed: ${sendResult.error || "unknown error"}`));
+          return NextResponse.json({
+            success: false,
+            error: `Newsletter send failed: ${sendResult.error || "unknown error"}`,
+          }, { status: 502 });
+        }
+
+        await sb.from("publishing_queue").update({
+          status: "published",
+          published_at: new Date().toISOString(),
+          preview_data: {
+            ...(item.preview_data || {}),
+            sent_count: sendResult.sent,
+            subscriber_emails: emails,
+            failed_recipients: sendResult.failed,
+            sent_at: new Date().toISOString(),
+          },
+        }).eq("id", queue_id);
+
+        await appendRequestNotification(sb, item.request_id,
+          sendResult.failed.length > 0
+            ? warn("publishing",
+                `Newsletter sent to ${sendResult.sent} subscriber${sendResult.sent === 1 ? "" : "s"}.`,
+                `${sendResult.failed.length} address(es) failed: ${sendResult.failed.join(", ")}`)
+            : success("publishing", `Newsletter sent to ${sendResult.sent} subscriber${sendResult.sent === 1 ? "" : "s"}.`)
+        );
+      } else {
+        await sb.from("publishing_queue").update({
+          status: "published",
+          published_at: new Date().toISOString(),
+        }).eq("id", queue_id);
+      }
     }
 
     if (action === "unapprove") {

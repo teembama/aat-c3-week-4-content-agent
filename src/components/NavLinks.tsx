@@ -15,6 +15,9 @@ export function NavLinks() {
       <a href="/queue" className="text-sm text-white/70 hover:text-white px-3 py-1.5 rounded-md hover:bg-white/10 transition-colors">
         Publishing Queue
       </a>
+      <a href="/subscribers" className="text-sm text-white/70 hover:text-white px-3 py-1.5 rounded-md hover:bg-white/10 transition-colors">
+        Subscribers
+      </a>
     </div>
   );
 }

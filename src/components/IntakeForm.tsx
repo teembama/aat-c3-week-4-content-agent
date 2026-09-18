@@ -39,6 +39,10 @@ export function IntakeForm({ onSuccess }: IntakeFormProps) {
     additional_context: "",
   });
 
+  // Either a full topic+audience pair, or a source URL we can derive them from.
+  const canSubmit =
+    (!!form.topic.trim() && !!form.audience.trim()) || !!form.source_url.trim();
+
   function update(field: string, value: string) {
     setForm((prev) => ({ ...prev, [field]: value }));
     setIssues((prev) => prev.filter((i) => i.field !== field));
@@ -209,7 +213,7 @@ export function IntakeForm({ onSuccess }: IntakeFormProps) {
       {/* Topic */}
       <div>
         <label htmlFor="topic" className="block text-sm font-medium text-[#1a1a1a] mb-1">
-          Topic or idea <span className="text-red-500">*</span>
+          Topic or idea <span className="text-[#8a847f] font-normal">(optional if you provide a source URL)</span>
         </label>
         <input id="topic" type="text" value={form.topic} onChange={(e) => update("topic", e.target.value)}
           placeholder='e.g. "How AI chatbots are transforming customer support for Nigerian SMEs"'
@@ -221,7 +225,7 @@ export function IntakeForm({ onSuccess }: IntakeFormProps) {
       {/* Audience */}
       <div>
         <label htmlFor="audience" className="block text-sm font-medium text-[#1a1a1a] mb-1">
-          Target audience <span className="text-red-500">*</span>
+          Target audience <span className="text-[#8a847f] font-normal">(optional if you provide a source URL)</span>
         </label>
         <input id="audience" type="text" value={form.audience} onChange={(e) => update("audience", e.target.value)}
           placeholder="e.g. Marketing managers at mid-size B2B companies"
@@ -285,12 +289,18 @@ export function IntakeForm({ onSuccess }: IntakeFormProps) {
             Cancel Submission
           </button>
         ) : (
-          <button type="submit" disabled={step === "warnings"}
+          <button type="submit" disabled={step === "warnings" || !canSubmit}
             className="px-6 py-2.5 bg-[#1f1823] text-white text-sm font-medium rounded-lg hover:bg-[#3d3347] disabled:opacity-50 transition-colors">
             {step === "editing" ? "Start Research & Generation" : "Checking…"}
           </button>
         )}
       </div>
+
+      {!canSubmit && step === "editing" && (
+        <p className="text-xs text-[#8a847f]">
+          Fill in both topic and target audience, or paste a source URL and we'll derive them for you.
+        </p>
+      )}
 
       {step === "submitting" && (
         <p className="text-xs text-[#8a847f] flex items-center gap-2">

@@ -40,6 +40,15 @@ const MAX_REGENERATIONS = 2;
 // Mirrors MAX_ARTICLE_REGENERATIONS in src/app/api/generate/route.ts
 const MAX_ARTICLE_REGENERATIONS = 2;
 
+function queueStatusLabel(q: PublishingQueueItem): string {
+  if (q.status === "pending_review") return "Pending Review";
+  if (q.status === "published" && q.channel === "newsletter") {
+    const sent = (q.preview_data as any)?.sent_count;
+    if (typeof sent === "number") return `Sent to ${sent} subscriber${sent === 1 ? "" : "s"}`;
+  }
+  return q.status.charAt(0).toUpperCase() + q.status.slice(1);
+}
+
 // Regeneration and the approve/reject actions both act on a queue item, so they
 // need separate loading keys to label the right button while sharing a card.
 const regenKey = (queueId: string) => `regen:${queueId}`;
@@ -462,7 +471,7 @@ function RequestDetailContent() {
                       : q.status === "approved" ? "bg-green-100 text-green-800"
                       : q.status === "rejected" ? "bg-red-100 text-red-800"
                       : "bg-amber-100 text-amber-800"}`}>
-                    {q.status === "pending_review" ? "Pending Review" : q.status.charAt(0).toUpperCase() + q.status.slice(1)}
+                    {queueStatusLabel(q)}
                   </span>
                 </div>
                 {q.subject_line && <p className="text-xs font-medium text-[#5a5550] mb-2">Subject: {q.subject_line}</p>}

@@ -27,15 +27,27 @@ export async function POST(req: NextRequest) {
 
     const topicTrimmed = (topic || "").trim();
     const audienceTrimmed = (audience || "").trim();
+    const urlTrimmed = (source_url || "").trim();
 
-    // Empty checks
-    if (!topicTrimmed) {
-      issues.push({ field: "topic", issue_type: "EMPTY", severity: "error",
-        message: "A topic is required.",
-        suggestion: "Describe what you want to write about — e.g. \"How AI chatbots are changing customer support for SMEs\"." });
+    // A usable source URL stands in for topic/audience — research derives both
+    // from the scraped article, so neither is required in that case.
+    let hasUsableUrl = false;
+    if (urlTrimmed) {
+      try {
+        hasUsableUrl = ["http:", "https:"].includes(new URL(urlTrimmed).protocol);
+      } catch {
+        hasUsableUrl = false;
+      }
     }
 
-    if (!audienceTrimmed) {
+    // Empty checks — skipped when a usable source URL was supplied
+    if (!topicTrimmed && !hasUsableUrl) {
+      issues.push({ field: "topic", issue_type: "EMPTY", severity: "error",
+        message: "Provide a topic or a source URL.",
+        suggestion: "Describe what you want to write about — e.g. \"How AI chatbots are changing customer support for SMEs\" — or paste a source URL and we'll derive the topic from it." });
+    }
+
+    if (!audienceTrimmed && !hasUsableUrl) {
       issues.push({ field: "audience", issue_type: "EMPTY", severity: "error",
         message: "Please specify who this content is for.",
         suggestion: "e.g. \"Marketing managers at mid-size B2B companies\" or \"startup founders in Lagos\"." });
@@ -96,6 +108,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ valid: false, issues });
     }
 
+    // URL-only submission: there is no topic or audience text to reason about,
+    // so there's nothing for the semantic layer to judge.
+    if (hasUsableUrl && !topicTrimmed && !audienceTrimmed) {
+      return NextResponse.json({ valid: true, issues });
+    }
+
     // ══════════════════════════════════════
     // LAYER B — Semantic AI (reasonability)
     // Catches: vague input, contradictions, 
@@ -148,7 +166,13 @@ IMPORTANT RULES:
 - A well-formed topic with a clear angle should pass even if it's short
 
 Return ONLY JSON: { "issues": [{ "field": "...", "issue_type": "...", "severity": "error"|"warning", "message": "...", "suggestion": "..." }] }
-If everything looks good, return { "issues": [] }.`,
+If everything looks good, return { "issues": [] }.${
+          hasUsableUrl
+            ? `\n\nNOTE: This request includes a source URL, which the system will scrape to derive
+any missing topic or audience. An empty topic or empty audience is therefore ACCEPTABLE here —
+never raise an issue about a field simply being absent. Judge only the fields that have content.`
+            : ""
+        }`,
         `Topic: ${topicTrimmed || "(empty)"}
 Audience: ${audienceTrimmed || "(empty)"}
 Tone: ${tone || "professional"}
