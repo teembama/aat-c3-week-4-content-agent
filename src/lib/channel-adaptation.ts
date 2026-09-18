@@ -25,8 +25,14 @@ X:
 
 NEWSLETTER:
 - Strong subject line with clear benefit. Intro of 1-3 sentences, then a
-  skimmable body with short bolded section headings and/or bullets.
-- CTA. Friendly sign-off. 250-600 words.`;
+  skimmable body with short section headers and/or bullets.
+- CTA. Friendly sign-off. 250-600 words.
+
+CRITICAL: Output must be plain text that can be copied and pasted directly into each platform. Do NOT use markdown formatting like **bold**, *italic*, ## headings, or [links](url). Instead:
+- For emphasis, use ALL CAPS sparingly or line breaks
+- For LinkedIn: use line breaks and simple bullet characters (•)
+- For X: plain text only, line breaks for readability
+- For newsletter: use line breaks, dashes for bullets, ALL CAPS for section headers. Include any links as plain URLs on their own line.`;
 
 export interface AdaptationContext {
   topic: string;
@@ -100,6 +106,19 @@ ${RESPONSE_SHAPE[channel]}`,
     userMessage(ctx),
     { maxTokens: 2048, stage: `channel_regeneration_${channel}` }
   );
+}
+
+/**
+ * Strips markdown the model may emit despite the plain-text instruction, so
+ * what's stored is exactly what a user can paste into the platform.
+ */
+export function cleanForPlatform(text: string): string {
+  return text
+    .replace(/\*\*(.+?)\*\*/g, "$1")                  // remove **bold**
+    .replace(/\*(.+?)\*/g, "$1")                      // remove *italic*
+    .replace(/^#{1,3}\s+/gm, "")                      // remove markdown headings
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)")   // [text](url) -> text (url)
+    .trim();
 }
 
 /** Formatting-rule warnings for an adapted channel output. */

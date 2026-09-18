@@ -7,6 +7,7 @@ import { NotificationTimeline } from "@/components/NotificationTimeline";
 import { ProgressTracker } from "@/components/ProgressTracker";
 import { AuthGuard } from "@/components/AuthGuard";
 import { ConfirmModal, ConfirmTone } from "@/components/ConfirmModal";
+import { CopyButton } from "@/components/CopyButton";
 import { useAuth, getAuthHeaders } from "@/lib/auth-context";
 import { ContentRequest, ResearchSource, ContentDraft, PublishingQueueItem } from "@/types";
 
@@ -32,6 +33,12 @@ const SOURCE_QUALITY: Record<string, { label: string; color: string }> = {
 
 function channelLabel(channel: string): string {
   return channel === "x" ? "X (Twitter)" : channel.charAt(0).toUpperCase() + channel.slice(1);
+}
+
+function copyLabel(channel: string): string {
+  if (channel === "newsletter") return "Newsletter";
+  if (channel === "x") return "X content";
+  return "LinkedIn content";
 }
 
 // Mirrors MAX_REGENERATIONS in src/app/api/regenerate-channel/route.ts
@@ -475,6 +482,9 @@ function RequestDetailContent() {
                   </span>
                 </div>
                 {q.subject_line && <p className="text-xs font-medium text-[#5a5550] mb-2">Subject: {q.subject_line}</p>}
+                <div className="flex items-center justify-end mb-1.5">
+                  <CopyButton text={q.formatted_content} label={copyLabel(q.channel)} />
+                </div>
                 <div className="text-xs text-[#5a5550] whitespace-pre-wrap max-h-44 overflow-y-auto border border-[#e8e3df] rounded-lg p-3 bg-[#faf9f8]">
                   {q.formatted_content}
                 </div>

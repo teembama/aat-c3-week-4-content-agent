@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServiceSupabase } from "@/lib/supabase";
 import { getAuthUser } from "@/lib/auth-api";
-import { adaptSingleChannel, validateChannelOutput, AdaptChannel } from "@/lib/channel-adaptation";
+import { adaptSingleChannel, validateChannelOutput, cleanForPlatform, AdaptChannel } from "@/lib/channel-adaptation";
 import { sendReviewNotification } from "@/lib/discord";
 import { warn, success } from "@/lib/notifications";
 import { PipelineNotification } from "@/types";
@@ -78,11 +78,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: "Regeneration returned empty content." }, { status: 500 });
     }
 
+    const cleanedContent = cleanForPlatform(adapted.content);
+
     const { error: updateErr } = await sb
       .from("publishing_queue")
       .update({
-        formatted_content: adapted.content,
-        subject_line: channel === "newsletter" ? adapted.subject_line || item.subject_line : item.subject_line,
+        formatted_content: cleanedContent,
+        subject_line: channel === "newsletter"
+          ? (adapted.subject_line ? cleanForPlatform(adapted.subject_line) : item.subject_line)
+          : item.subject_line,
         status: "pending_review",
         regeneration_count: usedSoFar + 1,
       })
@@ -97,7 +101,7 @@ export async function POST(req: NextRequest) {
 
     // Record it on the request's activity trail.
     const notifications: PipelineNotification[] = request.notifications || [];
-    const issues = validateChannelOutput(channel, adapted.content, adapted.format);
+    const issues = validateChannelOutput(channel, cleanedContent, adapted.format);
     notifications.push(
       success(
         "adaptation",

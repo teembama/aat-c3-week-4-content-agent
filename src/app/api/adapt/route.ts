@@ -4,7 +4,7 @@ import { CostEntry } from "@/lib/anthropic";
 import { info, warn, error, success } from "@/lib/notifications";
 import { PipelineNotification } from "@/types";
 import { getAuthUser } from "@/lib/auth-api";
-import { adaptAllChannels, validateChannelOutput } from "@/lib/channel-adaptation";
+import { adaptAllChannels, validateChannelOutput, cleanForPlatform } from "@/lib/channel-adaptation";
 import { sendReviewNotification } from "@/lib/discord";
 
 export const maxDuration = 60;
@@ -51,11 +51,24 @@ export async function POST(req: NextRequest) {
     });
     costs.push(adaptCost);
 
+    // Strip any markdown the model still emitted, so the stored text is
+    // paste-ready for the platform.
+    const channels = [
+      { channel: "linkedin" as const, content: cleanForPlatform(adapted.linkedin?.content || ""), subject_line: null },
+      { channel: "x" as const, content: cleanForPlatform(adapted.x?.content || ""), subject_line: null },
+      {
+        channel: "newsletter" as const,
+        content: cleanForPlatform(adapted.newsletter?.content || ""),
+        subject_line: adapted.newsletter?.subject_line ? cleanForPlatform(adapted.newsletter.subject_line) : null,
+      },
+    ];
+
     // ── Validate channel outputs against formatting rules ──
+    // Checked against the cleaned text, since that's what gets published.
     const validationIssues: string[] = [
-      ...(adapted.x?.content ? validateChannelOutput("x", adapted.x.content, adapted.x.format) : []),
-      ...validateChannelOutput("linkedin", adapted.linkedin?.content || ""),
-      ...validateChannelOutput("newsletter", adapted.newsletter?.content || ""),
+      ...validateChannelOutput("x", channels[1].content, adapted.x?.format),
+      ...validateChannelOutput("linkedin", channels[0].content),
+      ...validateChannelOutput("newsletter", channels[2].content),
     ];
 
     if (validationIssues.length > 0) {
@@ -64,13 +77,6 @@ export async function POST(req: NextRequest) {
         validationIssues.join(" · ")
       ));
     }
-
-    // Store each channel
-    const channels = [
-      { channel: "linkedin" as const, content: adapted.linkedin?.content, subject_line: null },
-      { channel: "x" as const, content: adapted.x?.content, subject_line: null },
-      { channel: "newsletter" as const, content: adapted.newsletter?.content, subject_line: adapted.newsletter?.subject_line || null },
-    ];
 
     let storedCount = 0;
     for (const ch of channels) {

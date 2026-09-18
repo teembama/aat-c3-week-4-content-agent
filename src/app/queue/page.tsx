@@ -5,6 +5,7 @@ import toast from "react-hot-toast";
 import { supabase } from "@/lib/supabase";
 import { AuthGuard } from "@/components/AuthGuard";
 import { ConfirmModal, ConfirmTone } from "@/components/ConfirmModal";
+import { CopyButton } from "@/components/CopyButton";
 import { useAuth, getAuthHeaders } from "@/lib/auth-context";
 import { PublishingQueueItem } from "@/types";
 
@@ -30,6 +31,12 @@ const STATUS_LABELS: Record<string, string> = {
 
 function channelLabel(channel: string): string {
   return channel === "x" ? "X (Twitter)" : channel.charAt(0).toUpperCase() + channel.slice(1);
+}
+
+function copyLabel(channel: string): string {
+  if (channel === "newsletter") return "Newsletter";
+  if (channel === "x") return "X content";
+  return "LinkedIn content";
 }
 
 function formatDate(iso: string): string {
@@ -155,6 +162,9 @@ function QueueContent() {
                 </div>
               </div>
 
+              <div className="flex items-center justify-end mb-1.5">
+                <CopyButton text={q.formatted_content} label={copyLabel(q.channel)} />
+              </div>
               <div className="text-xs text-[#5a5550] whitespace-pre-wrap max-h-32 overflow-y-auto border border-[#e8e3df] rounded-lg p-3 bg-[#faf9f8] mb-3">
                 {q.formatted_content}
               </div>
