@@ -37,6 +37,10 @@ function channelLabel(channel: string): string {
 // Mirrors MAX_REGENERATIONS in src/app/api/regenerate-channel/route.ts
 const MAX_REGENERATIONS = 2;
 
+// Regeneration and the approve/reject actions both act on a queue item, so they
+// need separate loading keys to label the right button while sharing a card.
+const regenKey = (queueId: string) => `regen:${queueId}`;
+
 function RequestDetailContent() {
   const params = useParams();
   const id = params.id as string;
@@ -44,11 +48,10 @@ function RequestDetailContent() {
   const isApprover = profile?.role === "approver";
   const [data, setData] = useState<RequestData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [actionLoading, setActionLoading] = useState<Set<string>>(new Set());
   const [addUrlInput, setAddUrlInput] = useState("");
   const [showAuditTrail, setShowAuditTrail] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
-  const [confirmBusy, setConfirmBusy] = useState(false);
 
   const loadData = useCallback(async () => {
     try {
@@ -66,31 +69,45 @@ function RequestDetailContent() {
     return () => clearInterval(interval);
   }, [loadData]);
 
-  async function handleConfirmRun() {
+  // Per-action loading keys, so one in-flight action doesn't disable the rest.
+  function startLoading(actionId: string) {
+    setActionLoading((prev) => new Set(prev).add(actionId));
+  }
+  function stopLoading(actionId: string) {
+    setActionLoading((prev) => {
+      const next = new Set(prev);
+      next.delete(actionId);
+      return next;
+    });
+  }
+  function isLoading(actionId: string) {
+    return actionLoading.has(actionId);
+  }
+
+  // Dismiss the dialog as soon as the action is dispatched rather than awaiting
+  // it. The overlay covers the whole page, so holding it open for the duration
+  // would serialize every action; per-button loading state reports progress.
+  function handleConfirmRun() {
     if (!pendingAction) return;
-    setConfirmBusy(true);
-    try {
-      await pendingAction.run();
-    } finally {
-      setConfirmBusy(false);
-      setPendingAction(null);
-    }
+    const { run } = pendingAction;
+    setPendingAction(null);
+    void run();
   }
 
   async function triggerGeneration() {
-    setActionLoading("generate");
+    startLoading("generate");
     try {
       const res = await fetch("/api/generate", { method: "POST", headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) }, body: JSON.stringify({ request_id: id }) });
       const json = await res.json();
       if (json.success) toast.success("Articles generated."); else toast.error(json.error || "Generation failed.");
       loadData();
     } catch { toast.error("Network error."); }
-    finally { setActionLoading(null); }
+    finally { stopLoading("generate"); }
   }
 
   async function addSourceUrl() {
     if (!addUrlInput.trim()) return;
-    setActionLoading("add_url");
+    startLoading("add_url");
     try {
       const res = await fetch("/api/research", { method: "POST", headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) },
         body: JSON.stringify({ request_id: id, source_url: addUrlInput.trim() }) });
@@ -98,33 +115,33 @@ function RequestDetailContent() {
       if (json.success) { toast.success("Source added."); setAddUrlInput(""); } else toast.error(json.error || "Failed.");
       loadData();
     } catch { toast.error("Network error."); }
-    finally { setActionLoading(null); }
+    finally { stopLoading("add_url"); }
   }
 
   async function selectDraft(draftId: string) {
-    setActionLoading(draftId);
+    startLoading(draftId);
     try {
       const res = await fetch("/api/adapt", { method: "POST", headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) }, body: JSON.stringify({ request_id: id, draft_id: draftId }) });
       const json = await res.json();
       if (json.success) toast.success("Channel versions ready."); else toast.error(json.error || "Failed.");
       loadData();
     } catch { toast.error("Network error."); }
-    finally { setActionLoading(null); }
+    finally { stopLoading(draftId); }
   }
 
   async function deselectDraft(draftId: string) {
-    setActionLoading(draftId);
+    startLoading(draftId);
     try {
       const res = await fetch("/api/deselect", { method: "POST", headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) }, body: JSON.stringify({ request_id: id, draft_id: draftId }) });
       const json = await res.json();
       if (json.success) toast.success("Article deselected."); else toast.error(json.error || "Failed.");
       loadData();
     } catch { toast.error("Network error."); }
-    finally { setActionLoading(null); }
+    finally { stopLoading(draftId); }
   }
 
   async function handleQueueAction(queueId: string, action: string) {
-    setActionLoading(queueId);
+    startLoading(queueId);
     try {
       const res = await fetch("/api/publish", { method: "POST", headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) }, body: JSON.stringify({ queue_id: queueId, action }) });
       const json = await res.json();
@@ -140,11 +157,11 @@ function RequestDetailContent() {
       else toast.error(json.error || "Failed.");
       loadData();
     } catch { toast.error("Network error."); }
-    finally { setActionLoading(null); }
+    finally { stopLoading(queueId); }
   }
 
   async function regenerateChannel(q: PublishingQueueItem) {
-    setActionLoading(q.id);
+    startLoading(regenKey(q.id));
     try {
       const res = await fetch("/api/regenerate-channel", {
         method: "POST",
@@ -156,7 +173,7 @@ function RequestDetailContent() {
       else toast.error(json.error || "Regeneration failed.");
       loadData();
     } catch { toast.error("Network error."); }
-    finally { setActionLoading(null); }
+    finally { stopLoading(regenKey(q.id)); }
   }
 
   async function exportSamplePack() {
@@ -199,7 +216,6 @@ function RequestDetailContent() {
         description={pendingAction?.description || ""}
         tone={pendingAction?.tone || "default"}
         confirmLabel={pendingAction?.confirmLabel}
-        busy={confirmBusy}
         onConfirm={handleConfirmRun}
         onCancel={() => setPendingAction(null)}
       />
@@ -265,9 +281,9 @@ function RequestDetailContent() {
             <input type="url" value={addUrlInput} onChange={(e) => setAddUrlInput(e.target.value)}
               placeholder="https://example.com/relevant-article"
               className="flex-1 rounded-lg border border-[#d1cbc6] px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#1f1823]" />
-            <button onClick={addSourceUrl} disabled={actionLoading === "add_url" || !addUrlInput.trim()}
+            <button onClick={addSourceUrl} disabled={isLoading("add_url") || !addUrlInput.trim()}
               className="px-4 py-2 bg-[#1f1823] text-white text-sm font-medium rounded-lg hover:bg-[#3d3347] disabled:opacity-50 transition-colors">
-              {actionLoading === "add_url" ? "Adding…" : "Add & Retry"}
+              {isLoading("add_url") ? "Adding…" : "Add & Retry"}
             </button>
           </div>
         </div>
@@ -279,9 +295,9 @@ function RequestDetailContent() {
           <p className="text-sm text-[#5a5550] mb-3">
             {request.status === "failed" ? "Previous generation failed. You can try again." : "Research complete. Ready to generate article options."}
           </p>
-          <button onClick={triggerGeneration} disabled={actionLoading === "generate"}
+          <button onClick={triggerGeneration} disabled={isLoading("generate")}
             className="px-5 py-2.5 bg-[#1f1823] text-white text-sm font-medium rounded-lg hover:bg-[#3d3347] disabled:opacity-50 transition-colors">
-            {actionLoading === "generate" ? "Generating — takes about 1-2 minutes…" : request.status === "failed" ? "Retry Generation" : "Generate Article Options"}
+            {isLoading("generate") ? "Generating — takes about 1-2 minutes…" : request.status === "failed" ? "Retry Generation" : "Generate Article Options"}
           </button>
         </div>
       )}
@@ -356,9 +372,9 @@ function RequestDetailContent() {
                       tone: "default",
                       confirmLabel: "Select & Adapt",
                       run: () => selectDraft(d.id),
-                    })} disabled={!!actionLoading}
+                    })} disabled={isLoading(d.id)}
                       className="mt-3 px-4 py-2 bg-[#1f1823] text-white text-sm font-medium rounded-lg hover:bg-[#3d3347] disabled:opacity-50 transition-colors">
-                      {actionLoading === d.id ? "Preparing…" : "Select & Adapt for Channels"}
+                      {isLoading(d.id) ? "Preparing…" : "Select & Adapt for Channels"}
                     </button>
                   )}
                   {d.status === "selected" && (
@@ -371,9 +387,9 @@ function RequestDetailContent() {
                           tone: "danger",
                           confirmLabel: "Deselect",
                           run: () => deselectDraft(d.id),
-                        })} disabled={!!actionLoading}
+                        })} disabled={isLoading(d.id)}
                           className="px-3 py-1.5 text-xs font-medium text-[#b5760a] border border-amber-200 bg-amber-50 rounded-lg hover:bg-amber-100 disabled:opacity-50 transition-colors">
-                          Deselect Article
+                          {isLoading(d.id) ? "Removing…" : "Deselect Article"}
                         </button>
                       )}
                     </div>
@@ -390,7 +406,11 @@ function RequestDetailContent() {
         <div className="bg-white rounded-xl border border-[#d1cbc6] p-5">
           <h2 className="text-sm font-semibold text-[#1a1a1a] uppercase tracking-wider mb-4">Channel Outputs</h2>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {queue.map((q) => (
+            {queue.map((q) => {
+              // Card-level: any action on this queue item blocks its siblings,
+              // but leaves every other channel's buttons live.
+              const busy = isLoading(q.id) || isLoading(regenKey(q.id));
+              return (
               <div key={q.id} className="border border-[#e8e3df] rounded-xl p-4">
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="font-semibold text-[#1a1a1a] text-sm capitalize">
@@ -418,7 +438,7 @@ function RequestDetailContent() {
                           tone: "approve",
                           confirmLabel: "Approve",
                           run: () => handleQueueAction(q.id, "approve"),
-                        })} disabled={!!actionLoading}
+                        })} disabled={busy}
                           className="px-3 py-1.5 bg-[#2d7a4f] text-white text-xs font-medium rounded-lg hover:bg-[#246b42] disabled:opacity-50">Approve</button>
                         <button onClick={() => setPendingAction({
                           title: "Reject content?",
@@ -426,7 +446,7 @@ function RequestDetailContent() {
                           tone: "reject",
                           confirmLabel: "Reject",
                           run: () => handleQueueAction(q.id, "reject"),
-                        })} disabled={!!actionLoading}
+                        })} disabled={busy}
                           className="px-3 py-1.5 bg-red-50 text-[#c43c3c] text-xs font-medium rounded-lg hover:bg-red-100 disabled:opacity-50 border border-red-200">Reject</button>
                       </>
                     ) : (
@@ -442,7 +462,7 @@ function RequestDetailContent() {
                           tone: "approve",
                           confirmLabel: "Mark Published",
                           run: () => handleQueueAction(q.id, "publish"),
-                        })} disabled={!!actionLoading}
+                        })} disabled={busy}
                           className="px-3 py-1.5 bg-[#2d7a4f] text-white text-xs font-medium rounded-lg hover:bg-[#246b42] disabled:opacity-50">Mark Published</button>
                         <button onClick={() => setPendingAction({
                           title: "Revoke approval?",
@@ -450,7 +470,7 @@ function RequestDetailContent() {
                           tone: "danger",
                           confirmLabel: "Revoke Approval",
                           run: () => handleQueueAction(q.id, "unapprove"),
-                        })} disabled={!!actionLoading}
+                        })} disabled={busy}
                           className="px-3 py-1.5 text-xs font-medium text-[#b5760a] border border-amber-200 bg-amber-50 rounded-lg hover:bg-amber-100 disabled:opacity-50">Revoke Approval</button>
                       </>
                     ) : (
@@ -464,7 +484,7 @@ function RequestDetailContent() {
                       tone: "danger",
                       confirmLabel: "Unpublish",
                       run: () => handleQueueAction(q.id, "unpublish"),
-                    })} disabled={!!actionLoading}
+                    })} disabled={busy}
                       className="px-3 py-1.5 text-xs font-medium text-[#b5760a] border border-amber-200 bg-amber-50 rounded-lg hover:bg-amber-100 disabled:opacity-50">Unpublish</button>
                   )}
                   {q.status === "rejected" && (() => {
@@ -479,9 +499,9 @@ function RequestDetailContent() {
                             tone: "default",
                             confirmLabel: "Regenerate",
                             run: () => regenerateChannel(q),
-                          })} disabled={!!actionLoading}
+                          })} disabled={busy}
                             className="px-3 py-1.5 bg-[#1f1823] text-white text-xs font-medium rounded-lg hover:bg-[#3d3347] disabled:opacity-50">
-                            {actionLoading === q.id ? "Regenerating…" : `Regenerate (${remaining}/${MAX_REGENERATIONS} remaining)`}
+                            {isLoading(regenKey(q.id)) ? "Regenerating…" : `Regenerate (${remaining}/${MAX_REGENERATIONS} remaining)`}
                           </button>
                         ) : (
                           <p className="text-xs text-[#8a847f] italic">Maximum regenerations reached — handle manually</p>
@@ -493,7 +513,7 @@ function RequestDetailContent() {
                             tone: "default",
                             confirmLabel: "Undo Rejection",
                             run: () => handleQueueAction(q.id, "unreject"),
-                          })} disabled={!!actionLoading}
+                          })} disabled={busy}
                             className="px-3 py-1.5 text-xs font-medium text-[#b5760a] border border-amber-200 bg-amber-50 rounded-lg hover:bg-amber-100 disabled:opacity-50">Undo Rejection</button>
                         )}
                       </>
@@ -501,7 +521,8 @@ function RequestDetailContent() {
                   })()}
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
