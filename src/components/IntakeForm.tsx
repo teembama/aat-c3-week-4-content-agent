@@ -71,7 +71,12 @@ export function IntakeForm({ onSuccess }: IntakeFormProps) {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setIssues([]);
-    setStep("editing");
+
+    // Validation is itself an LLM call, so the button has to show progress and
+    // be abortable from the moment it's clicked — not only once it passes.
+    setStep("submitting");
+    abortRef.current = new AbortController();
+    const signal = abortRef.current.signal;
 
     // ── Step 1: Validate ──
     try {
@@ -79,6 +84,7 @@ export function IntakeForm({ onSuccess }: IntakeFormProps) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),
+        signal,
       });
       const valData = await valRes.json();
       const allIssues: ValidationIssue[] = valData.issues || [];
@@ -90,6 +96,7 @@ export function IntakeForm({ onSuccess }: IntakeFormProps) {
 
       if (errors.length > 0) {
         setIssues(allIssues);
+        setStep("editing");
         toast.error(`Please fix ${errors.length} issue${errors.length > 1 ? "s" : ""} before submitting.`);
         return;
       }
@@ -100,7 +107,8 @@ export function IntakeForm({ onSuccess }: IntakeFormProps) {
         setStep("warnings");
         return;
       }
-    } catch {
+    } catch (err: any) {
+      if (err?.name === "AbortError") return; // cancelSubmission already reset the form
       // If validation endpoint fails, don't block
     }
 
@@ -110,20 +118,28 @@ export function IntakeForm({ onSuccess }: IntakeFormProps) {
 
   async function doSubmit() {
     setStep("submitting");
-    abortRef.current = new AbortController();
+    if (!abortRef.current || abortRef.current.signal.aborted) {
+      abortRef.current = new AbortController();
+    }
+
+    const payload = {
+      topic: form.topic.trim(),
+      audience: form.audience.trim(),
+      source_url: form.source_url.trim() || null,
+      tone: form.tone,
+      primary_keyword: form.primary_keyword.trim() || null,
+      additional_context: form.additional_context.trim() || null,
+    };
 
     try {
-      const res = await fetch("/api/research", {
+      const headers = { "Content-Type": "application/json", ...(await getAuthHeaders()) };
+
+      // Create the row only — this returns in well under a second, so the user
+      // lands on the detail page instead of waiting out scraping and search.
+      const res = await fetch("/api/requests", {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) },
-        body: JSON.stringify({
-          topic: form.topic.trim(),
-          audience: form.audience.trim(),
-          source_url: form.source_url.trim() || null,
-          tone: form.tone,
-          primary_keyword: form.primary_keyword.trim() || null,
-          additional_context: form.additional_context.trim() || null,
-        }),
+        headers,
+        body: JSON.stringify(payload),
         signal: abortRef.current.signal,
       });
       const data = await res.json();
@@ -134,10 +150,21 @@ export function IntakeForm({ onSuccess }: IntakeFormProps) {
         return;
       }
 
+      const requestId = data.data.request_id;
+
+      // Research runs as its own request against that row. Deliberately not
+      // awaited and deliberately not abortable — the detail page shows its
+      // progress, and cancelling navigation shouldn't kill the pipeline.
+      fetch("/api/research", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ ...payload, request_id: requestId, retry: false }),
+      }).catch(() => { /* progress and failures surface on the detail page */ });
+
       toast.success("Request submitted — research is starting.");
       // Stay in the submitting state through the hand-off, so the button never
       // flips back to idle while the detail page is still loading.
-      onSuccess(data.data.request_id);
+      onSuccess(requestId);
       return;
     } catch (err: any) {
       if (err?.name === "AbortError") {
@@ -287,10 +314,17 @@ export function IntakeForm({ onSuccess }: IntakeFormProps) {
       {/* Action buttons */}
       <div className="flex gap-3">
         {step === "submitting" ? (
-          <button type="button" onClick={cancelSubmission}
-            className="px-6 py-2.5 bg-red-100 text-red-700 text-sm font-medium rounded-lg hover:bg-red-200 transition-colors">
-            Cancel Submission
-          </button>
+          <>
+            <button type="submit" disabled
+              className="px-6 py-2.5 bg-[#1f1823] text-white text-sm font-medium rounded-lg opacity-50 cursor-not-allowed transition-colors flex items-center gap-2">
+              <span className="w-3.5 h-3.5 border-2 border-white/60 border-t-transparent rounded-full animate-spin inline-block" />
+              Submitting…
+            </button>
+            <button type="button" onClick={cancelSubmission}
+              className="px-6 py-2.5 bg-red-100 text-red-700 text-sm font-medium rounded-lg hover:bg-red-200 transition-colors">
+              Cancel Submission
+            </button>
+          </>
         ) : (
           <button type="submit" disabled={step === "warnings" || !canSubmit}
             className="px-6 py-2.5 bg-[#1f1823] text-white text-sm font-medium rounded-lg hover:bg-[#3d3347] disabled:opacity-50 transition-colors">

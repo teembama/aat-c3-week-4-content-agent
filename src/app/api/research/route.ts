@@ -37,7 +37,10 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { source_url, tone, primary_keyword, additional_context } = body;
     const existingRequestId: string | undefined = body.request_id;
-    const isRetry = !!existingRequestId;
+    // Retry = "add this source URL to a request that came back short".
+    // A request_id with no source_url is a row /api/requests just created for
+    // instant navigation, which still needs the full first research pass.
+    const isRetry = !!existingRequestId && !!source_url?.trim() && body.retry !== false;
     let topic: string = body.topic;
     let audience: string = body.audience;
     // Set for a fresh URL-only request: topic/audience come from the scrape.
@@ -69,6 +72,24 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ success: false, error: "Provide a topic or a source URL." }, { status: 400 });
       }
 
+      // The row already exists when the client pre-created it to navigate
+      // early; adopt it rather than inserting a duplicate.
+      if (existingRequestId) {
+        const { data: preCreated } = await sb
+          .from("content_requests")
+          .select("notifications")
+          .eq("id", existingRequestId)
+          .single();
+
+        if (!preCreated) {
+          return NextResponse.json({ success: false, error: "Request not found." }, { status: 404 });
+        }
+
+        requestId = existingRequestId;
+        notifications = preCreated.notifications || [];
+        await sb.from("content_requests").update({ status: "researching", notifications }).eq("id", requestId);
+      } else {
+
       notifications.push(info("intake", "Content request received."));
 
       // topic/audience are NOT NULL in the schema, so a URL-only request gets
@@ -97,6 +118,7 @@ export async function POST(req: NextRequest) {
       // including creator_id in the insert above) so request creation still
       // works even before the auth migration's creator_id column exists.
       await sb.from("content_requests").update({ creator_id: authUser.user_id }).eq("id", requestId);
+      }
     }
 
     // ── Scrape source URL ──
