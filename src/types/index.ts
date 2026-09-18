@@ -50,6 +50,7 @@ export interface ContentRequest {
   additional_context?: string | null;
   status: RequestStatus;
   notifications: PipelineNotification[];
+  article_regeneration_count?: number;
   created_at: string;
   updated_at: string;
 }

@@ -37,6 +37,9 @@ function channelLabel(channel: string): string {
 // Mirrors MAX_REGENERATIONS in src/app/api/regenerate-channel/route.ts
 const MAX_REGENERATIONS = 2;
 
+// Mirrors MAX_ARTICLE_REGENERATIONS in src/app/api/generate/route.ts
+const MAX_ARTICLE_REGENERATIONS = 2;
+
 // Regeneration and the approve/reject actions both act on a queue item, so they
 // need separate loading keys to label the right button while sharing a card.
 const regenKey = (queueId: string) => `regen:${queueId}`;
@@ -103,6 +106,17 @@ function RequestDetailContent() {
       loadData();
     } catch { toast.error("Network error."); }
     finally { stopLoading("generate"); }
+  }
+
+  async function regenerateAllArticles() {
+    startLoading("regenerate_all");
+    try {
+      const res = await fetch("/api/generate", { method: "POST", headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) }, body: JSON.stringify({ request_id: id }) });
+      const json = await res.json();
+      if (json.success) toast.success("Fresh article options ready."); else toast.error(json.error || "Regeneration failed.");
+      loadData();
+    } catch { toast.error("Network error."); }
+    finally { stopLoading("regenerate_all"); }
   }
 
   async function addSourceUrl() {
@@ -207,6 +221,7 @@ function RequestDetailContent() {
   const sourceInsufficient = lastResearchMilestone?.level === "warning";
   const showGenerateButton = !isProcessing && drafts.length === 0 && researchDone && !sourceInsufficient;
   const hasApprovedOrPublished = queue.some((q) => q.status === "approved" || q.status === "published");
+  const articleRegensLeft = MAX_ARTICLE_REGENERATIONS - (request.article_regeneration_count ?? 0);
 
   return (
     <div className="space-y-6">
@@ -308,6 +323,32 @@ function RequestDetailContent() {
           <h2 className="text-sm font-semibold text-[#1a1a1a] uppercase tracking-wider mb-4">
             Article Options ({drafts.length})
           </h2>
+
+          {/* Whole-set regeneration, for when none of the options are usable */}
+          {request.status === "review" && !hasApprovedOrPublished && (
+            <div className="mb-4 pb-4 border-b border-[#e8e3df]">
+              {articleRegensLeft > 0 ? (
+                <div className="flex items-center gap-3 flex-wrap">
+                  <button onClick={() => setPendingAction({
+                    title: "Regenerate all articles?",
+                    description: `This will replace the current options with fresh ones. You have ${articleRegensLeft} of ${MAX_ARTICLE_REGENERATIONS} regenerations remaining. This cannot be undone.`,
+                    tone: "danger",
+                    confirmLabel: "Regenerate All",
+                    run: regenerateAllArticles,
+                  })} disabled={isLoading("regenerate_all")}
+                    className="px-4 py-2 bg-[#1f1823] text-white text-xs font-medium rounded-lg hover:bg-[#3d3347] disabled:opacity-50 transition-colors">
+                    {isLoading("regenerate_all") ? "Regenerating — takes about 1-2 minutes…" : "Regenerate All Articles"}
+                  </button>
+                  <span className="text-xs text-[#8a847f]">
+                    ({articleRegensLeft}/{MAX_ARTICLE_REGENERATIONS} regenerations remaining)
+                  </span>
+                </div>
+              ) : (
+                <p className="text-xs text-[#8a847f]">Maximum regenerations reached</p>
+              )}
+            </div>
+          )}
+
           <div className="space-y-5">
             {drafts.map((d) => {
               const cv = (d.evaluation as any)?.claim_verification;

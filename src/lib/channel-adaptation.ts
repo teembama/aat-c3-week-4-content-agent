@@ -24,7 +24,8 @@ X:
 - Max 1-2 hashtags. Lead with the main insight.
 
 NEWSLETTER:
-- Strong subject line with clear benefit. Short intro. Skimmable body.
+- Strong subject line with clear benefit. Intro of 1-3 sentences, then a
+  skimmable body with short bolded section headings and/or bullets.
 - CTA. Friendly sign-off. 250-600 words.`;
 
 export interface AdaptationContext {
