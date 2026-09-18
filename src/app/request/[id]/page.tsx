@@ -8,6 +8,7 @@ import { ProgressTracker } from "@/components/ProgressTracker";
 import { AuthGuard } from "@/components/AuthGuard";
 import { ConfirmModal, ConfirmTone } from "@/components/ConfirmModal";
 import { CopyButton } from "@/components/CopyButton";
+import { NewsletterSendModal } from "@/components/NewsletterSendModal";
 import { useAuth, getAuthHeaders } from "@/lib/auth-context";
 import { ContentRequest, ResearchSource, ContentDraft, PublishingQueueItem } from "@/types";
 
@@ -41,6 +42,11 @@ function copyLabel(channel: string): string {
   return "LinkedIn content";
 }
 
+/** Copy is only useful once the content has cleared review. */
+function canCopy(status: string): boolean {
+  return status === "approved" || status === "published";
+}
+
 // Mirrors MAX_REGENERATIONS in src/app/api/regenerate-channel/route.ts
 const MAX_REGENERATIONS = 2;
 
@@ -71,6 +77,7 @@ function RequestDetailContent() {
   const [addUrlInput, setAddUrlInput] = useState("");
   const [showAuditTrail, setShowAuditTrail] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const [sendingNewsletter, setSendingNewsletter] = useState<PublishingQueueItem | null>(null);
 
   const loadData = useCallback(async () => {
     try {
@@ -170,10 +177,18 @@ function RequestDetailContent() {
     finally { stopLoading(draftId); }
   }
 
-  async function handleQueueAction(queueId: string, action: string) {
+  async function handleQueueAction(queueId: string, action: string, editedContent?: string) {
     startLoading(queueId);
     try {
-      const res = await fetch("/api/publish", { method: "POST", headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) }, body: JSON.stringify({ queue_id: queueId, action }) });
+      const res = await fetch("/api/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await getAuthHeaders()) },
+        body: JSON.stringify({
+          queue_id: queueId,
+          action,
+          ...(editedContent !== undefined ? { edited_content: editedContent } : {}),
+        }),
+      });
       const json = await res.json();
       const SUCCESS_LABELS: Record<string, string> = {
         approve: "Approved.",
@@ -241,6 +256,18 @@ function RequestDetailContent() {
 
   return (
     <div className="space-y-6">
+      <NewsletterSendModal
+        open={!!sendingNewsletter}
+        initialContent={sendingNewsletter?.formatted_content || ""}
+        busy={!!sendingNewsletter && isLoading(sendingNewsletter.id)}
+        onSend={(content) => {
+          const item = sendingNewsletter;
+          setSendingNewsletter(null);
+          if (item) handleQueueAction(item.id, "publish", content);
+        }}
+        onCancel={() => setSendingNewsletter(null)}
+      />
+
       <ConfirmModal
         open={!!pendingAction}
         title={pendingAction?.title || ""}
@@ -483,7 +510,12 @@ function RequestDetailContent() {
                 </div>
                 {q.subject_line && <p className="text-xs font-medium text-[#5a5550] mb-2">Subject: {q.subject_line}</p>}
                 <div className="flex items-center justify-end mb-1.5">
-                  <CopyButton text={q.formatted_content} label={copyLabel(q.channel)} />
+                  <CopyButton
+                    text={q.formatted_content}
+                    label={copyLabel(q.channel)}
+                    disabled={!canCopy(q.status)}
+                    disabledTitle="Available after approval"
+                  />
                 </div>
                 <div className="text-xs text-[#5a5550] whitespace-pre-wrap max-h-44 overflow-y-auto border border-[#e8e3df] rounded-lg p-3 bg-[#faf9f8]">
                   {q.formatted_content}
@@ -516,14 +548,21 @@ function RequestDetailContent() {
                   {q.status === "approved" && (
                     isApprover ? (
                       <>
-                        <button onClick={() => setPendingAction({
-                          title: "Mark as published?",
-                          description: `Mark this ${channelLabel(q.channel)} as published? A notification will be sent to the team Discord.`,
-                          tone: "approve",
-                          confirmLabel: "Mark Published",
-                          run: () => handleQueueAction(q.id, "publish"),
-                        })} disabled={busy}
-                          className="px-3 py-1.5 bg-[#2d7a4f] text-white text-xs font-medium rounded-lg hover:bg-[#246b42] disabled:opacity-50">Mark Published</button>
+                        {q.channel === "newsletter" ? (
+                          <button onClick={() => setSendingNewsletter(q)} disabled={busy}
+                            className="px-3 py-1.5 bg-[#2d7a4f] text-white text-xs font-medium rounded-lg hover:bg-[#246b42] disabled:opacity-50">
+                            {busy ? "Sending…" : "Send Newsletter"}
+                          </button>
+                        ) : (
+                          <button onClick={() => setPendingAction({
+                            title: "Mark as published?",
+                            description: `Mark this ${channelLabel(q.channel)} as published? A notification will be sent to the team Discord.`,
+                            tone: "approve",
+                            confirmLabel: "Mark Published",
+                            run: () => handleQueueAction(q.id, "publish"),
+                          })} disabled={busy}
+                            className="px-3 py-1.5 bg-[#2d7a4f] text-white text-xs font-medium rounded-lg hover:bg-[#246b42] disabled:opacity-50">Mark Published</button>
+                        )}
                         <button onClick={() => setPendingAction({
                           title: "Revoke approval?",
                           description: `Revoke approval for this ${channelLabel(q.channel)} content? It will return to pending review.`,

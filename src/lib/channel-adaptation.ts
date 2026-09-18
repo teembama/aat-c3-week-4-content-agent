@@ -26,7 +26,8 @@ X:
 NEWSLETTER:
 - Strong subject line with clear benefit. Intro of 1-3 sentences, then a
   skimmable body with short section headers and/or bullets.
-- CTA. Friendly sign-off. 250-600 words.
+- CTA. End with a warm sign-off using [Your Name] as a placeholder. The approver
+  will replace this with their actual name before sending. 250-600 words.
 
 CRITICAL: Output must be plain text that can be copied and pasted directly into each platform. Do NOT use markdown formatting like **bold**, *italic*, ## headings, or [links](url). Instead:
 - For emphasis, use ALL CAPS sparingly or line breaks

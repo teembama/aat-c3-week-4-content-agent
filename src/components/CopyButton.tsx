@@ -6,7 +6,17 @@ import toast from "react-hot-toast";
 /**
  * Copies channel content to the clipboard and confirms inline for 2 seconds.
  */
-export function CopyButton({ text, label }: { text: string; label: string }) {
+export function CopyButton({
+  text,
+  label,
+  disabled = false,
+  disabledTitle,
+}: {
+  text: string;
+  label: string;
+  disabled?: boolean;
+  disabledTitle?: string;
+}) {
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -26,12 +36,17 @@ export function CopyButton({ text, label }: { text: string; label: string }) {
     }
   }
 
+  const isDisabled = disabled || !text;
+
   return (
     <button
       type="button"
       onClick={handleCopy}
-      disabled={!text}
-      className="px-2 py-1 text-[10px] font-medium text-[#5a5550] border border-[#d1cbc6] rounded-md hover:bg-[#e8e3df] disabled:opacity-50 transition-colors flex-shrink-0"
+      disabled={isDisabled}
+      title={isDisabled ? disabledTitle : undefined}
+      className={`px-2 py-1 text-[10px] font-medium text-[#5a5550] border border-[#d1cbc6] rounded-md transition-colors flex-shrink-0 ${
+        isDisabled ? "opacity-40 cursor-not-allowed" : "hover:bg-[#e8e3df]"
+      }`}
     >
       {copied ? "Copied ✓" : "Copy"}
     </button>

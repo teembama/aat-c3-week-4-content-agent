@@ -47,7 +47,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: "Authentication required." }, { status: 401 });
     }
 
-    const { queue_id, action } = await req.json();
+    const { queue_id, action, edited_content } = await req.json();
     if (!queue_id || !action) {
       return NextResponse.json({ success: false, error: "Missing queue_id or action." }, { status: 400 });
     }
@@ -100,6 +100,20 @@ export async function POST(req: NextRequest) {
       // Publishing the newsletter channel actually sends it. A total send
       // failure leaves the item approved so the user can retry.
       if (item.channel === "newsletter") {
+        // The approver may have edited the copy in the send dialog. Persist it
+        // first so the stored row matches what actually goes out.
+        let contentToSend: string = item.formatted_content || "";
+        if (typeof edited_content === "string" && edited_content.trim()) {
+          contentToSend = edited_content;
+          const { error: editErr } = await sb
+            .from("publishing_queue")
+            .update({ formatted_content: contentToSend })
+            .eq("id", queue_id);
+          if (editErr) {
+            return NextResponse.json({ success: false, error: editErr.message }, { status: 500 });
+          }
+        }
+
         const { data: subscribers } = await sb
           .from("newsletter_subscribers")
           .select("email")
@@ -116,7 +130,7 @@ export async function POST(req: NextRequest) {
         const sendResult = await sendNewsletter({
           to: emails,
           subject: item.subject_line || "Newsletter",
-          content: item.formatted_content || "",
+          content: contentToSend,
         });
 
         if (!sendResult.success) {
