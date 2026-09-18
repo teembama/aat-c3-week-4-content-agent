@@ -3,6 +3,7 @@ import { getServiceSupabase } from "@/lib/supabase";
 import { getAuthUser } from "@/lib/auth-api";
 import { sendApprovalNotification, sendReviewNotification, DiscordAction } from "@/lib/discord";
 import { sendNewsletter } from "@/lib/email";
+import { cleanForPlatform } from "@/lib/channel-adaptation";
 import { success, warn, error } from "@/lib/notifications";
 import { PipelineNotification } from "@/types";
 
@@ -100,11 +101,17 @@ export async function POST(req: NextRequest) {
       // Publishing the newsletter channel actually sends it. A total send
       // failure leaves the item approved so the user can retry.
       if (item.channel === "newsletter") {
-        // The approver may have edited the copy in the send dialog. Persist it
-        // first so the stored row matches what actually goes out.
-        let contentToSend: string = item.formatted_content || "";
-        if (typeof edited_content === "string" && edited_content.trim()) {
-          contentToSend = edited_content;
+        // The approver may have edited the copy in the send dialog. Strip
+        // markdown regardless of source — content adapted before cleaning was
+        // introduced still carries it, and it would render literally in email.
+        const rawContent =
+          typeof edited_content === "string" && edited_content.trim()
+            ? edited_content
+            : item.formatted_content || "";
+        const contentToSend = cleanForPlatform(rawContent);
+
+        // Persist first, so the stored row matches what recipients received.
+        if (contentToSend !== item.formatted_content) {
           const { error: editErr } = await sb
             .from("publishing_queue")
             .update({ formatted_content: contentToSend })

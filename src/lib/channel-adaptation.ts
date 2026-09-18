@@ -1,5 +1,9 @@
 import { callClaude, CostEntry } from "./anthropic";
 
+// Re-exported so server callers can keep importing it from here alongside the
+// adaptation helpers; the implementation is SDK-free for client use.
+export { cleanForPlatform } from "./clean-text";
+
 export type AdaptChannel = "linkedin" | "x" | "newsletter";
 
 // Kept byte-identical to the rules the original single-shot adapt call used,
@@ -107,19 +111,6 @@ ${RESPONSE_SHAPE[channel]}`,
     userMessage(ctx),
     { maxTokens: 2048, stage: `channel_regeneration_${channel}` }
   );
-}
-
-/**
- * Strips markdown the model may emit despite the plain-text instruction, so
- * what's stored is exactly what a user can paste into the platform.
- */
-export function cleanForPlatform(text: string): string {
-  return text
-    .replace(/\*\*(.+?)\*\*/g, "$1")                  // remove **bold**
-    .replace(/\*(.+?)\*/g, "$1")                      // remove *italic*
-    .replace(/^#{1,3}\s+/gm, "")                      // remove markdown headings
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)")   // [text](url) -> text (url)
-    .trim();
 }
 
 /** Formatting-rule warnings for an adapted channel output. */

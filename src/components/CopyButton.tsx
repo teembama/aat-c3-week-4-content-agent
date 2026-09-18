@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
+import { cleanForPlatform } from "@/lib/clean-text";
 
 /**
  * Copies channel content to the clipboard and confirms inline for 2 seconds.
@@ -26,7 +27,9 @@ export function CopyButton({
 
   async function handleCopy() {
     try {
-      await navigator.clipboard.writeText(text);
+      // Cleaned at copy time too, so content adapted before markdown stripping
+      // was introduced still pastes cleanly.
+      await navigator.clipboard.writeText(cleanForPlatform(text));
       toast.success(`${label} copied!`);
       setCopied(true);
       if (timerRef.current) clearTimeout(timerRef.current);
